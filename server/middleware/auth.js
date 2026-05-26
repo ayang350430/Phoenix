@@ -1,0 +1,48 @@
+import jwt from 'jsonwebtoken'
+import config from '../config/index.js'
+
+export function generateToken(user) {
+  const roles = (user.roles || []).map(r => r.code || r)
+  return jwt.sign(
+    { id: user.id, username: user.username, roles },
+    config.jwt.secret,
+    { expiresIn: config.jwt.expiresIn }
+  )
+}
+
+export function authRequired(req, res, next) {
+  const header = req.headers.authorization
+  if (!header || !header.startsWith('Bearer ')) {
+    return res.status(401).json({ code: 401, message: '未登录' })
+  }
+  try {
+    const token = header.slice(7)
+    req.user = jwt.verify(token, config.jwt.secret)
+    next()
+  } catch {
+    return res.status(401).json({ code: 401, message: '登录已过期' })
+  }
+}
+
+/**
+ * 角色检查中间件工厂
+ * roleRequired('admin')          — 只允许管理员
+ * roleRequired('admin', 'agent') — 管理员 或 代理
+ */
+export function roleRequired(...allowedRoles) {
+  return (req, res, next) => {
+    const roles = req.user?.roles || []
+    // super 拥有所有权限
+    if (roles.includes('super')) return next()
+    const hasRole = allowedRoles.some(r => roles.includes(r))
+    if (!hasRole) {
+      return res.status(403).json({ code: 403, message: '权限不足' })
+    }
+    next()
+  }
+}
+
+// 快捷方式
+export function adminRequired(req, res, next) {
+  return roleRequired('admin')(req, res, next)
+}
