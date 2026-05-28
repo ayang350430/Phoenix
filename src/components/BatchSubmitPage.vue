@@ -1,6 +1,7 @@
 <script setup>
-import { computed, inject, onMounted, ref } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElNotification } from 'element-plus'
 
 const route = useRoute()
 const router = useRouter()
@@ -12,7 +13,7 @@ const { isAdmin, balance, getToken, fetchBalance } = ws
 // ========== 商品 & 类型选择 ==========
 const products = ref([])
 const types = computed(() =>
-  products.value.map(p => ({ key: p.id, label: p.name.replace(/^小红书/, ''), enabled: true, product: p }))
+  products.value.map(p => ({ key: p.id, label: p.name, enabled: true, product: p }))
 )
 const activeProductId = ref(null)
 
@@ -153,6 +154,24 @@ const submitBlockReason = computed(() => {
   if (!agreed.value) return '请先勾选确认公告'
   if (balance.value < totalCost.value) return '余额不足，请先充值'
   return ''
+})
+
+const balanceInsufficient = computed(() => totalCost.value > 0 && balance.value < totalCost.value)
+let balanceNotified = false
+
+watch(balanceInsufficient, (insufficient) => {
+  if (insufficient && !balanceNotified) {
+    balanceNotified = true
+    const shortfall = (totalCost.value - balance.value).toFixed(2)
+    ElNotification({
+      title: '余额不足',
+      message: `当前余额 ¥${balance.value.toFixed(2)}，预计扣费 ¥${totalCost.value.toFixed(2)}，还差 ¥${shortfall}，请先充值。`,
+      type: 'warning',
+      duration: 6000,
+      position: 'top-right'
+    })
+  }
+  if (!insufficient) balanceNotified = false
 })
 
 async function submitBatch() {

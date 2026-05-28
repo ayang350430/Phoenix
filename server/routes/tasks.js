@@ -162,6 +162,99 @@ router.get('/supplements', async (req, res) => {
   }
 })
 
+// GET /api/tasks/supplements/by-batch — 按批次分组的补单记录
+router.get('/supplements/by-batch', async (req, res) => {
+  try {
+    const userIds = await User.getVisibleUserIds(req.user)
+    const { page = 1, pageSize = 10, status } = req.query
+    const offset = (Number(page) - 1) * Number(pageSize)
+
+    const base = () => {
+      const q = db('order_replenishment_records as r')
+        .join('order_batches as b', 'b.id', 'r.batch_id')
+      if (Array.isArray(userIds)) q.whereIn('r.user_id', userIds)
+      if (status) q.where('r.status', status)
+      return q
+    }
+
+    const batchRows = await base()
+      .select(
+        'r.batch_id',
+        'b.batch_no',
+        'b.source_type',
+        db.raw('COUNT(r.id) as total_count'),
+        db.raw("SUM(CASE WHEN r.status IN ('pending','created') THEN 1 ELSE 0 END) as pending_count"),
+        db.raw("SUM(CASE WHEN r.status = 'agent_approved' THEN 1 ELSE 0 END) as agent_approved_count"),
+        db.raw("SUM(CASE WHEN r.status = 'processing' THEN 1 ELSE 0 END) as processing_count"),
+        db.raw("SUM(CASE WHEN r.status = 'rejected' THEN 1 ELSE 0 END) as rejected_count"),
+        db.raw('SUM(r.shortage_quantity) as total_shortage'),
+        db.raw('MIN(r.created_at) as earliest_at'),
+        db.raw('MAX(r.created_at) as latest_at')
+      )
+      .groupBy('r.batch_id', 'b.batch_no', 'b.source_type')
+      .orderBy('latest_at', 'desc')
+      .limit(Number(pageSize)).offset(offset)
+
+    const [{ cnt }] = await base()
+      .countDistinct('r.batch_id as cnt')
+
+    // lookup user info for each batch
+    const batchIds = batchRows.map(r => r.batch_id)
+    let userMap = {}
+    if (batchIds.length) {
+      const users = await db('order_replenishment_records as r')
+        .join('users as u', 'u.id', 'r.user_id')
+        .whereIn('r.batch_id', batchIds)
+        .select('r.batch_id', 'u.username', 'u.nickname')
+        .groupBy('r.batch_id', 'u.username', 'u.nickname')
+      for (const u of users) {
+        userMap[u.batch_id] = { username: u.username, nickname: u.nickname }
+      }
+    }
+
+    const rows = batchRows.map(r => ({
+      ...r,
+      total_count: Number(r.total_count),
+      pending_count: Number(r.pending_count),
+      agent_approved_count: Number(r.agent_approved_count),
+      processing_count: Number(r.processing_count),
+      rejected_count: Number(r.rejected_count),
+      total_shortage: Number(r.total_shortage),
+      username: userMap[r.batch_id]?.username || '',
+      nickname: userMap[r.batch_id]?.nickname || ''
+    }))
+
+    res.json({ code: 0, data: { rows, total: Number(cnt) } })
+  } catch (err) {
+    res.status(500).json({ code: 500, message: err.message })
+  }
+})
+
+// GET /api/tasks/supplements/batch/:batchId — 某批次下的补单明细
+router.get('/supplements/batch/:batchId', async (req, res) => {
+  try {
+    const userIds = await User.getVisibleUserIds(req.user)
+    const batchId = Number(req.params.batchId)
+
+    const q = db('order_replenishment_records as r')
+      .leftJoin('users', 'r.user_id', 'users.id')
+      .leftJoin('orders', 'orders.id', 'r.order_id')
+      .leftJoin('products', 'products.id', 'orders.product_id')
+      .where('r.batch_id', batchId)
+    if (Array.isArray(userIds)) q.whereIn('r.user_id', userIds)
+
+    const rows = await q.select(
+      'r.*',
+      'users.username', 'users.nickname',
+      'products.name as product_name'
+    ).orderBy('r.created_at', 'asc')
+
+    res.json({ code: 0, data: rows })
+  } catch (err) {
+    res.status(500).json({ code: 500, message: err.message })
+  }
+})
+
 // ========== 统计 ==========
 
 // GET /api/tasks/stats — 统计数据

@@ -1,7 +1,12 @@
 <script setup>
-import { ref, nextTick, onMounted, onBeforeUnmount, inject } from 'vue'
+import { ref, computed, nextTick, watch, onMounted, onBeforeUnmount, onErrorCaptured, inject } from 'vue'
 
 const { getToken } = inject('workspace')
+
+onErrorCaptured((err) => {
+  console.error('[ChatWidget]', err)
+  return false
+})
 
 const open = ref(false)
 const input = ref('')
@@ -107,13 +112,15 @@ async function fetchMessages() {
           id: msg.id,
           role: msg.sender_role === 'user' ? 'user' : 'bot',
           type: msg.type,
-          text: msg.type === 'text' ? msg.content : undefined,
+          text: msg.type === 'text' ? String(msg.content ?? '') : undefined,
           src: (msg.type === 'image' || msg.type === 'audio') ? msg.content : undefined,
           _playing: false, _dur: 0
         })
       }
-      const maxId = Math.max(...data.data.messages.map(m => m.id))
-      lastMsgId.value = Math.max(lastMsgId.value, maxId)
+      if (data.data.messages.length > 0) {
+        const maxId = Math.max(...data.data.messages.map(m => m.id))
+        lastMsgId.value = Math.max(lastMsgId.value, maxId)
+      }
       if (!open.value && data.data.messages.some(m => m.sender_role !== 'user')) {
         hasUnread.value = true
       }
@@ -137,6 +144,7 @@ function sendQuick(q) {
 }
 
 async function sendMessage(directAnswer) {
+  if (directAnswer && typeof directAnswer !== 'string') directAnswer = undefined
   const text = input.value.trim()
   if (!text || sending.value) return
 
@@ -255,7 +263,8 @@ function onPaste(e) {
 }
 
 function closeEmojiOnOutside(e) {
-  if (showEmoji.value && !e.target.closest('.emoji-area')) showEmoji.value = false
+  if (!open.value || !showEmoji.value) return
+  if (!e.target.closest('.emoji-area')) showEmoji.value = false
 }
 
 // ========== 语音功能 ==========
@@ -431,6 +440,81 @@ function fmtDuration(s) {
   return `${m}:${String(sec).padStart(2, '0')}`
 }
 
+// ========== FAB 拖拽 ==========
+const fabRef = ref(null)
+const fabPos = ref({ x: null, y: null })
+
+watch(open, (val) => {
+  if (!val) {
+    nextTick(() => {
+      if (fabPos.value.x !== null) {
+        const vw = window.innerWidth
+        const vh = window.innerHeight
+        if (fabPos.value.x < 0 || fabPos.value.x > vw - 56 ||
+            fabPos.value.y < 0 || fabPos.value.y > vh - 56) {
+          fabPos.value = { x: null, y: null }
+        }
+      }
+    })
+  }
+})
+let dragging = false
+let dragStartX = 0, dragStartY = 0
+let fabStartX = 0, fabStartY = 0
+let hasMoved = false
+
+function onFabPointerDown(e) {
+  if (open.value) return
+  const el = fabRef.value
+  if (!el) return
+  dragging = true
+  hasMoved = false
+  const rect = el.getBoundingClientRect()
+  dragStartX = e.clientX
+  dragStartY = e.clientY
+  fabStartX = rect.left
+  fabStartY = rect.top
+  el.setPointerCapture(e.pointerId)
+  e.preventDefault()
+}
+
+function onFabPointerMove(e) {
+  if (!dragging) return
+  const dx = e.clientX - dragStartX
+  const dy = e.clientY - dragStartY
+  if (Math.abs(dx) > 4 || Math.abs(dy) > 4) hasMoved = true
+  if (!hasMoved) return
+  const vw = window.innerWidth
+  const vh = window.innerHeight
+  let nx = fabStartX + dx
+  let ny = fabStartY + dy
+  nx = Math.max(0, Math.min(nx, vw - 56))
+  ny = Math.max(0, Math.min(ny, vh - 56))
+  fabPos.value = { x: nx, y: ny }
+}
+
+function onFabPointerUp() {
+  if (!dragging) return
+  dragging = false
+  if (!hasMoved) { toggleChat(); return }
+  const vw = window.innerWidth
+  const x = fabPos.value.x
+  if (x !== null) {
+    fabPos.value.x = x + 28 < vw / 2 ? 16 : vw - 56 - 16
+  }
+}
+
+const fabStyle = computed(() => {
+  if (fabPos.value.x === null) return {}
+  return {
+    left: fabPos.value.x + 'px',
+    top: fabPos.value.y + 'px',
+    right: 'auto',
+    bottom: 'auto',
+    transition: dragging ? 'none' : 'left 0.3s ease, top 0.3s ease'
+  }
+})
+
 onMounted(async () => {
   // 加载客服配置
   try {
@@ -456,12 +540,14 @@ onMounted(async () => {
           id: msg.id,
           role: msg.sender_role === 'user' ? 'user' : 'bot',
           type: msg.type,
-          text: msg.type === 'text' ? msg.content : undefined,
+          text: msg.type === 'text' ? String(msg.content ?? '') : undefined,
           src: (msg.type === 'image' || msg.type === 'audio') ? msg.content : undefined,
           _playing: false, _dur: 0
         })
       }
-      lastMsgId.value = Math.max(...data.data.messages.map(m => m.id))
+      if (data.data.messages.length > 0) {
+        lastMsgId.value = Math.max(...data.data.messages.map(m => m.id))
+      }
       scrollBottom()
       startPolling()
     }
@@ -478,8 +564,18 @@ onBeforeUnmount(() => {
 
 <template>
   <Teleport to="body">
-    <!-- 浮动按钮 -->
-    <button v-if="!open" type="button" class="chat-fab" @click="toggleChat">
+    <!-- 浮动按钮（可拖拽） -->
+    <button
+      v-if="!open"
+      ref="fabRef"
+      type="button"
+      class="chat-fab"
+      :style="fabStyle"
+      @pointerdown="onFabPointerDown"
+      @pointermove="onFabPointerMove"
+      @pointerup="onFabPointerUp"
+      @pointercancel="onFabPointerUp"
+    >
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
       </svg>
@@ -535,8 +631,8 @@ onBeforeUnmount(() => {
               </div>
               <!-- 文本 -->
               <div v-if="msg.type === 'text'" class="chat-bubble">
-                <span v-for="(line, li) in msg.text.split('\n')" :key="li">
-                  {{ line }}<br v-if="li < msg.text.split('\n').length - 1" />
+                <span v-for="(line, li) in String(msg.text ?? '').split('\n')" :key="li">
+                  {{ line }}<br v-if="li < String(msg.text ?? '').split('\n').length - 1" />
                 </span>
               </div>
               <!-- 图片 -->
@@ -589,11 +685,11 @@ onBeforeUnmount(() => {
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
               </button>
               <Transition name="emoji-pop">
-                <div v-if="showEmoji" class="emoji-panel" @click.stop>
+                <div v-if="showEmoji" class="emoji-panel" @click.stop @pointerdown.stop @touchend.stop>
                   <div v-for="g in emojiGroups" :key="g.label" class="emoji-group">
                     <p class="emoji-group-label">{{ g.label }}</p>
                     <div class="emoji-grid">
-                      <button v-for="e in g.items" :key="e" type="button" class="emoji-item" @click="insertEmoji(e)">{{ e }}</button>
+                      <button v-for="e in g.items" :key="e" type="button" class="emoji-item" @click.stop="insertEmoji(e)">{{ e }}</button>
                     </div>
                   </div>
                 </div>
@@ -641,7 +737,7 @@ onBeforeUnmount(() => {
               @paste="onPaste"
               :disabled="sending"
             />
-            <button type="button" class="chat-send" :disabled="!input.trim() || sending" @click="sendMessage">
+            <button type="button" class="chat-send" :disabled="!input.trim() || sending" @click="sendMessage()">
               发送
             </button>
           </div>
@@ -667,16 +763,18 @@ onBeforeUnmount(() => {
   width: 56px; height: 56px;
   border-radius: 50%;
   background: linear-gradient(135deg, #5b8def, #8b7bf7);
-  border: none; cursor: pointer;
+  border: none; cursor: grab;
   display: grid; place-items: center;
   box-shadow: 0 8px 28px rgba(91,141,239,.35);
   transition: transform 240ms cubic-bezier(.22,1,.36,1), box-shadow 240ms ease;
+  touch-action: none;
+  user-select: none;
 }
+.chat-fab:active { cursor: grabbing; }
 .chat-fab:hover {
   transform: scale(1.1) translateY(-2px);
   box-shadow: 0 14px 36px rgba(91,141,239,.45);
 }
-.chat-fab:active { transform: scale(.95); }
 
 .fab-dot {
   position: absolute; top: 6px; right: 6px;
@@ -1029,7 +1127,7 @@ onBeforeUnmount(() => {
 
 /* ========== 动画 ========== */
 .chat-slide-enter-active { transition: all 320ms cubic-bezier(.22,1,.36,1); }
-.chat-slide-leave-active { transition: all 200ms ease-in; }
+.chat-slide-leave-active { transition: all 200ms ease-in; pointer-events: none; }
 .chat-slide-enter-from { opacity: 0; transform: translateY(20px) scale(.95); }
 .chat-slide-leave-to { opacity: 0; transform: translateY(10px) scale(.97); }
 

@@ -10,9 +10,11 @@
   var POLL  = 3000
   var LS_KEY = 'goosd_visitor_id'
   var LS_NAME_KEY = 'goosd_visitor_name'
+  var LS_TOKEN_KEY = 'goosd_visitor_token'
 
   /* ========== 状态 ========== */
   var visitorId = localStorage.getItem(LS_KEY) || ''
+  var visitorToken = localStorage.getItem(LS_TOKEN_KEY) || ''
   var convId = null
   var lastMsgId = 0
   var pollTimer = null
@@ -278,8 +280,10 @@
       .then(function (d) {
         if (d.code !== 0) return
         visitorId = d.data.visitor_id
+        visitorToken = d.data.visitor_token || ''
         convId = d.data.conversation_id
         localStorage.setItem(LS_KEY, visitorId)
+        localStorage.setItem(LS_TOKEN_KEY, visitorToken)
 
         body.innerHTML = ''
         renderWelcome()
@@ -389,7 +393,7 @@
     appendMsg({ sender_role: 'user', type: 'text', content: text, created_at: new Date().toISOString() })
     scrollDown()
 
-    api('POST', '/send', { visitor_id: visitorId, type: 'text', content: text })
+    api('POST', '/send', { visitor_id: visitorId, visitor_token: visitorToken, type: 'text', content: text })
       .then(function (d) {
         if (d.code === 0 && d.data && d.data.id) lastMsgId = Math.max(lastMsgId, d.data.id)
       })
@@ -407,7 +411,7 @@
       appendMsg({ sender_role: 'user', type: 'image', content: base64, created_at: new Date().toISOString() })
       scrollDown()
 
-      api('POST', '/send', { visitor_id: visitorId, type: 'image', content: base64 })
+      api('POST', '/send', { visitor_id: visitorId, visitor_token: visitorToken, type: 'image', content: base64 })
         .then(function (d) {
           if (d.code === 0 && d.data && d.data.id) lastMsgId = Math.max(lastMsgId, d.data.id)
         })
@@ -418,7 +422,7 @@
 
   function poll() {
     if (!convId) return
-    api('GET', '/messages?visitor_id=' + encodeURIComponent(visitorId) + '&since=' + lastMsgId)
+    api('GET', '/messages?visitor_id=' + encodeURIComponent(visitorId) + '&visitor_token=' + encodeURIComponent(visitorToken) + '&since=' + lastMsgId)
       .then(function (d) {
         if (d.code !== 0) return
         var msgs = (d.data && d.data.messages) || []

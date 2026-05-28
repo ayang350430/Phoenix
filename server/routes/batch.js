@@ -5,11 +5,59 @@ import Config from '../models/Config.js'
 import Product from '../models/Product.js'
 import AgentPrice from '../models/AgentPrice.js'
 import Task from '../models/Task.js'
-import { collectSnapshots, fetchNoteId, fetchNoteBasic } from '../services/noteApi.js'
+import { collectSnapshots, fetchSnapshot, fetchNoteId, fetchNoteBasic } from '../services/noteApi.js'
 import { cancelTask } from '../services/xhsApi.js'
 import db from '../db.js'
 
 const router = Router()
+
+const SNAPSHOT_RETRY_DELAY = 2 * 60_000
+
+async function retryMissingSnapshots(batchDbId, targetType) {
+  try {
+    const query = db('orders').where({ batch_id: batchDbId })
+
+    if (targetType === 'like') {
+      query.whereNull('like_count')
+    } else {
+      query.whereNull('snapshot_current_read_count')
+    }
+
+    const orders = await query
+
+    if (!orders.length) return
+
+    console.log(`[snapshot-retry] 批次 ${batchDbId}: ${orders.length} 条缺少快照，重试中`)
+
+    for (const order of orders) {
+      try {
+        const snap = await fetchSnapshot(order.note_url, targetType)
+
+        const updateData = { updated_at: new Date() }
+        if (!order.note_id && snap.note_id) updateData.note_id = snap.note_id
+        if (!order.title && snap.title) updateData.title = snap.title
+        if (!order.author_id && snap.author_id) updateData.author_id = snap.author_id
+        if (!order.author_name && snap.author_name) updateData.author_name = snap.author_name
+        if (!order.avatar_url && snap.avatar_url) updateData.avatar_url = snap.avatar_url
+
+        if (targetType === 'like') {
+          if (snap.like_count != null) updateData.like_count = snap.like_count
+          if (snap.count_payload) updateData.snapshot_current_like_payload = snap.count_payload
+        } else {
+          if (snap.view_count != null) updateData.snapshot_current_read_count = snap.view_count
+          if (snap.count_payload) updateData.snapshot_current_read_payload = snap.count_payload
+        }
+
+        await db('orders').where({ id: order.id }).update(updateData)
+        console.log(`[snapshot-retry] ${order.order_no} 快照补录成功`)
+      } catch (err) {
+        console.warn(`[snapshot-retry] ${order.order_no} 仍失败: ${err.message}`)
+      }
+    }
+  } catch (err) {
+    console.error('[snapshot-retry] 异常:', err.message)
+  }
+}
 
 // 自动迁移：orders 表添加 product_id 列
 ;(async () => {
@@ -184,21 +232,17 @@ router.post('/submit', authRequired, async (req, res) => {
     const unitPrice = await AgentPrice.resolvePrice(userId, product.id, product.unit_price)
     const minQuantity = product.min_quantity || 10
 
-    // 校验行
-    const validLines = lines.filter(l => l.url && l.quantity >= minQuantity)
+    // 校验行（含 quantity 类型和上限校验）
+    const validLines = lines.filter(l => {
+      const qty = parseInt(l.quantity, 10)
+      return l.url && Number.isFinite(qty) && qty >= minQuantity && qty <= 1_000_000
+    }).map(l => ({ ...l, quantity: parseInt(l.quantity, 10) }))
     if (validLines.length === 0) {
       return res.status(400).json({ code: 400, message: '没有有效的提交行' })
     }
 
     const totalQuantity = validLines.reduce((s, l) => s + l.quantity, 0)
     const totalCost = Math.round(totalQuantity * unitPrice * 10000) / 10000
-
-    // 检查余额
-    const balRow = await db('balance_accounts').where({ user_id: userId }).first()
-    const available = balRow ? parseFloat(balRow.available_amount) : 0
-    if (available < totalCost) {
-      return res.status(400).json({ code: 400, message: '余额不足' })
-    }
 
     // 采集快照（曝光除外）
     let snapshots = new Map()
@@ -213,6 +257,14 @@ router.post('/submit', authRequired, async (req, res) => {
     // ---- 事务 ----
     const trx = await db.transaction()
     try {
+      // 事务内加行锁检查余额（防止并发超扣）
+      const balRow = await trx('balance_accounts').where({ user_id: userId }).forUpdate().first()
+      const available = balRow ? parseFloat(balRow.available_amount) : 0
+      if (available < totalCost) {
+        await trx.rollback()
+        return res.status(400).json({ code: 400, message: '余额不足' })
+      }
+
       const now = new Date()
       const ts = Date.now().toString(36).toUpperCase()
       const hex = crypto.randomBytes(3).toString('hex').toUpperCase()
@@ -314,6 +366,10 @@ router.post('/submit', authRequired, async (req, res) => {
       })
 
       await trx.commit()
+
+      if (type !== 'impression') {
+        setTimeout(() => retryMissingSnapshots(insertId, type), SNAPSHOT_RETRY_DELAY)
+      }
 
       res.json({
         code: 0,
@@ -512,7 +568,7 @@ router.post('/:id/refund', authRequired, async (req, res) => {
             order_status: 'refunded', refunded_quantity: refundQty, updated_at: now
           })
 
-          const balAcc = await trx('balance_accounts').where({ user_id: userId }).first()
+          const balAcc = await trx('balance_accounts').where({ user_id: userId }).forUpdate().first()
           const beforeBal = parseFloat(balAcc?.available_amount) || 0
           const afterBal = Math.round((beforeBal + refundAmount) * 10000) / 10000
 
@@ -646,7 +702,7 @@ router.post('/orders/:id/refund', authRequired, async (req, res) => {
           order_status: 'refunded', refunded_quantity: refundQty, updated_at: now
         })
 
-        const balAcc = await trx('balance_accounts').where({ user_id: userId }).first()
+        const balAcc = await trx('balance_accounts').where({ user_id: userId }).forUpdate().first()
         const beforeBal = parseFloat(balAcc?.available_amount) || 0
         const afterBal = Math.round((beforeBal + refundAmount) * 10000) / 10000
 
@@ -802,25 +858,55 @@ router.post('/orders/:id/request-supplement', authRequired, async (req, res) => 
   }
 })
 
-// ========== 管理员审批补单 ==========
+// ========== 审批补单（两级：代理 → 管理员） ==========
 
 // PUT /api/batch/supplement/:id/approve
-router.put('/supplement/:id/approve', authRequired, adminRequired, async (req, res) => {
+router.put('/supplement/:id/approve', authRequired, async (req, res) => {
   try {
-    const record = await db('order_replenishment_records').where({ id: Number(req.params.id) }).first()
-    if (!record) return res.status(404).json({ code: 404, message: '记录不存在' })
-    if (record.status !== 'pending') {
-      return res.status(400).json({ code: 400, message: `当前状态为 ${record.status}，无法审批` })
+    const roles = req.user.roles || []
+    const isAdmin = roles.includes('admin') || roles.includes('super')
+    const isAgent = roles.includes('agent')
+    if (!isAdmin && !isAgent) {
+      return res.status(403).json({ code: 403, message: '无审批权限' })
     }
 
-    await db('order_replenishment_records').where({ id: record.id }).update({
-      status: 'approved',
-      reviewed_at: new Date(),
-      reviewed_by: req.user.id,
-      updated_at: new Date()
-    })
+    const record = await db('order_replenishment_records').where({ id: Number(req.params.id) }).first()
+    if (!record) return res.status(404).json({ code: 404, message: '记录不存在' })
 
-    res.json({ code: 0, message: '已批准补单申请' })
+    if (isAgent && !isAdmin) {
+      // 代理只能审批团队下属的、状态为 pending 的
+      const subordinates = await db('users').where({ referred_by: req.user.id }).select('id')
+      const teamIds = [req.user.id, ...subordinates.map(u => u.id)]
+      if (!teamIds.includes(record.user_id)) {
+        return res.status(403).json({ code: 403, message: '无权审批此记录' })
+      }
+      if (record.status !== 'pending') {
+        return res.status(400).json({ code: 400, message: `当前状态为 ${record.status}，无法审批` })
+      }
+
+      await db('order_replenishment_records').where({ id: record.id }).update({
+        status: 'agent_approved',
+        agent_reviewed_at: new Date(),
+        agent_reviewed_by: req.user.id,
+        updated_at: new Date()
+      })
+
+      res.json({ code: 0, message: '代理已批准，等待管理员最终审批' })
+    } else {
+      // 管理员可以审批 pending 或 agent_approved
+      if (record.status !== 'pending' && record.status !== 'agent_approved') {
+        return res.status(400).json({ code: 400, message: `当前状态为 ${record.status}，无法审批` })
+      }
+
+      await db('order_replenishment_records').where({ id: record.id }).update({
+        status: 'processing',
+        reviewed_at: new Date(),
+        reviewed_by: req.user.id,
+        updated_at: new Date()
+      })
+
+      res.json({ code: 0, message: '已批准，补单处理中' })
+    }
   } catch (err) {
     console.error('[supplement/approve]', err.message)
     res.status(500).json({ code: 500, message: err.message })
@@ -828,12 +914,31 @@ router.put('/supplement/:id/approve', authRequired, adminRequired, async (req, r
 })
 
 // PUT /api/batch/supplement/:id/reject
-router.put('/supplement/:id/reject', authRequired, adminRequired, async (req, res) => {
+router.put('/supplement/:id/reject', authRequired, async (req, res) => {
   try {
+    const roles = req.user.roles || []
+    const isAdmin = roles.includes('admin') || roles.includes('super')
+    const isAgent = roles.includes('agent')
+    if (!isAdmin && !isAgent) {
+      return res.status(403).json({ code: 403, message: '无审批权限' })
+    }
+
     const record = await db('order_replenishment_records').where({ id: Number(req.params.id) }).first()
     if (!record) return res.status(404).json({ code: 404, message: '记录不存在' })
-    if (record.status !== 'pending') {
-      return res.status(400).json({ code: 400, message: `当前状态为 ${record.status}，无法操作` })
+
+    if (isAgent && !isAdmin) {
+      const subordinates = await db('users').where({ referred_by: req.user.id }).select('id')
+      const teamIds = [req.user.id, ...subordinates.map(u => u.id)]
+      if (!teamIds.includes(record.user_id)) {
+        return res.status(403).json({ code: 403, message: '无权操作此记录' })
+      }
+      if (record.status !== 'pending') {
+        return res.status(400).json({ code: 400, message: `当前状态为 ${record.status}，无法操作` })
+      }
+    } else {
+      if (record.status !== 'pending' && record.status !== 'agent_approved') {
+        return res.status(400).json({ code: 400, message: `当前状态为 ${record.status}，无法操作` })
+      }
     }
 
     await db('order_replenishment_records').where({ id: record.id }).update({

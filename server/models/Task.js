@@ -232,7 +232,7 @@ const Task = {
   async getReplenishmentByOrderId(orderId) {
     return db('order_replenishment_records')
       .where({ order_id: orderId })
-      .whereIn('status', ['created', 'pending', 'approved'])
+      .whereIn('status', ['created', 'pending', 'agent_approved', 'processing'])
       .first()
   },
 

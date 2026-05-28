@@ -18,6 +18,16 @@ function verifyEmbedToken(token) {
   return parseInt(uid)
 }
 
+/* ========== visitor 签名：防止枚举他人 visitor_id ========== */
+function signVisitorId(visitorId) {
+  return crypto.createHmac('sha256', config.jwt.secret).update(visitorId).digest('hex').slice(0, 16)
+}
+
+function verifyVisitorToken(visitorId, visitorToken) {
+  if (!visitorId || !visitorToken) return false
+  return visitorToken === signVisitorId(visitorId)
+}
+
 /* ========== 确保 visitor 字段 ========== */
 let migrated = false
 async function ensureColumns() {
@@ -59,7 +69,7 @@ router.post('/init', async (req, res) => {
     res.json({
       code: 0,
       data: {
-        visitor_id, conversation_id: conv.id,
+        visitor_id, visitor_token: signVisitorId(visitor_id), conversation_id: conv.id,
         messages: messages.map(m => ({ id: m.id, sender_role: m.sender_role, type: m.type, content: m.content, created_at: m.created_at }))
       }
     })
@@ -70,8 +80,11 @@ router.post('/init', async (req, res) => {
 router.post('/send', async (req, res) => {
   try {
     await ensureColumns()
-    const { visitor_id, type, content } = req.body || {}
+    const { visitor_id, visitor_token, type, content } = req.body || {}
     if (!visitor_id || !content) return res.status(400).json({ code: 400, message: '参数缺失' })
+    if (!verifyVisitorToken(visitor_id, visitor_token)) {
+      return res.status(403).json({ code: 403, message: '身份验证失败' })
+    }
     const conv = await db('chat_conversations').where({ visitor_id, status: 'open' }).first()
     if (!conv) return res.status(404).json({ code: 404, message: '会话不存在，请先初始化' })
     const msgType = type || 'text'
@@ -86,8 +99,11 @@ router.post('/send', async (req, res) => {
 router.get('/messages', async (req, res) => {
   try {
     await ensureColumns()
-    const { visitor_id, since } = req.query
+    const { visitor_id, visitor_token, since } = req.query
     if (!visitor_id) return res.status(400).json({ code: 400, message: '缺少visitor_id' })
+    if (!verifyVisitorToken(visitor_id, visitor_token)) {
+      return res.status(403).json({ code: 403, message: '身份验证失败' })
+    }
     const conv = await db('chat_conversations').where({ visitor_id, status: 'open' }).first()
     if (!conv) return res.json({ code: 0, data: { messages: [] } })
     let q = db('chat_messages').where({ conversation_id: conv.id })

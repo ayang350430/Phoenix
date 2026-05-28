@@ -110,53 +110,59 @@ router.put('/:id/balance', adminRequired, validate({ body: ['amount', 'remark'] 
     const userId = Number(req.params.id)
     const { amount, remark } = req.body
     const num = parseFloat(amount)
-    if (isNaN(num)) {
+    if (isNaN(num) || !Number.isFinite(num)) {
       return res.status(400).json({ code: 400, message: '金额无效' })
     }
 
-    // 获取当前余额
-    let balance = await db('balance_accounts').where({ user_id: userId }).first()
-    const oldAmount = balance ? parseFloat(balance.available_amount) : 0
-    const newAmount = oldAmount + num
+    // 事务 + 行锁，防止并发覆盖写
+    const result = await db.transaction(async (trx) => {
+      const balance = await trx('balance_accounts').where({ user_id: userId }).forUpdate().first()
+      const oldAmount = balance ? parseFloat(balance.available_amount) : 0
+      const newAmount = Math.round((oldAmount + num) * 10000) / 10000
 
-    if (newAmount < 0) {
-      return res.status(400).json({ code: 400, message: `余额不足，当前 ¥${oldAmount.toFixed(2)}` })
-    }
+      if (newAmount < 0) {
+        throw Object.assign(new Error(`余额不足，当前 ¥${oldAmount.toFixed(2)}`), { statusCode: 400 })
+      }
 
-    if (balance) {
-      await db('balance_accounts')
-        .where({ user_id: userId })
-        .update({ available_amount: newAmount, updated_at: new Date() })
-    } else {
-      await db('balance_accounts').insert({
+      const now = new Date()
+      if (balance) {
+        await trx('balance_accounts')
+          .where({ user_id: userId })
+          .update({ available_amount: newAmount, updated_at: now })
+      } else {
+        await trx('balance_accounts').insert({
+          user_id: userId,
+          available_amount: newAmount,
+          created_at: now,
+          updated_at: now
+        })
+      }
+
+      // 记录流水（用 UUID 防止碰撞）
+      const { randomUUID } = await import('crypto')
+      await trx('account_records').insert({
+        record_no: `ADMIN_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
         user_id: userId,
-        available_amount: newAmount,
-        frozen_amount: 0,
-        created_at: new Date(),
-        updated_at: new Date()
+        record_type: num >= 0 ? 'admin_add' : 'admin_deduct',
+        direction: num >= 0 ? 'in' : 'out',
+        actual_paid_amount: Math.abs(num),
+        before_available_amount: oldAmount,
+        after_available_amount: newAmount,
+        remark: remark || (num >= 0 ? '管理员充值' : '管理员扣款'),
+        created_at: now
       })
-    }
 
-    // 记录流水
-    await db('account_records').insert({
-      record_no: `ADMIN_${Date.now()}`,
-      user_id: userId,
-      record_type: num >= 0 ? 'admin_add' : 'admin_deduct',
-      direction: num >= 0 ? 'in' : 'out',
-      actual_paid_amount: Math.abs(num),
-      before_available_amount: oldAmount,
-      after_available_amount: newAmount,
-      remark: remark || (num >= 0 ? '管理员充值' : '管理员扣款'),
-      created_at: new Date()
+      return { oldAmount, newAmount }
     })
 
     res.json({
       code: 0,
       message: `余额已调整 ${num >= 0 ? '+' : ''}${num.toFixed(2)}`,
-      data: { balance: newAmount }
+      data: { balance: result.newAmount }
     })
   } catch (err) {
-    res.status(500).json({ code: 500, message: err.message })
+    const status = err.statusCode || 500
+    res.status(status).json({ code: status, message: err.message })
   }
 })
 

@@ -1,6 +1,6 @@
 import db from '../db.js'
 import { createTask, getTaskStatus, buildTaskPayload } from './xhsApi.js'
-import { fetchNoteId, fetchNoteBasic } from './noteApi.js'
+import { fetchNoteId, fetchNoteBasic, fetchNoteViewCount, fetchNoteLikeCount } from './noteApi.js'
 
 /**
  * 订单同步调度器
@@ -45,9 +45,12 @@ async function dispatchPendingOrders() {
         continue
       }
 
-      // 确保有 note_id 和 author_id
       let noteId = order.note_id
       let authorId = order.author_id
+
+      if (!noteId && !order.note_url) {
+        continue
+      }
 
       if (!noteId) {
         noteId = await fetchNoteId(order.note_url)
@@ -75,6 +78,22 @@ async function dispatchPendingOrders() {
         })
       }
 
+      // 派单前补采快照（如果缺失）
+      const snapUpdate = {}
+      if (order.target_type === 'like' && order.like_count == null) {
+        try {
+          const { like_count, payload: lp } = await fetchNoteLikeCount(noteId)
+          if (like_count != null) snapUpdate.like_count = like_count
+          if (lp) snapUpdate.snapshot_current_like_payload = JSON.stringify(lp).slice(0, 8000)
+        } catch { /* 快照非关键，不阻塞派单 */ }
+      } else if (order.target_type !== 'impression' && order.snapshot_current_read_count == null) {
+        try {
+          const { view_count, payload: vp } = await fetchNoteViewCount(noteId)
+          if (view_count != null) snapUpdate.snapshot_current_read_count = view_count
+          if (vp) snapUpdate.snapshot_current_read_payload = JSON.stringify(vp).slice(0, 8000)
+        } catch { /* 快照非关键，不阻塞派单 */ }
+      }
+
       // 构建载荷 & 创建上游任务
       const payload = buildTaskPayload(order, noteId, authorId)
       const taskId = await createTask(order.target_type, payload, product.api_endpoint)
@@ -86,7 +105,8 @@ async function dispatchPendingOrders() {
         external_status: 'accepted',
         order_status: 'running',
         last_dispatch_at: new Date(),
-        updated_at: new Date()
+        updated_at: new Date(),
+        ...snapUpdate
       })
 
       dispatched++
@@ -152,7 +172,6 @@ async function syncRunningOrders() {
         updateData.external_completed_quantity = result.currentCount
 
         if (result.status === 2) {
-          // 上游已完成
           updateData.order_status = 'completed'
           updateData.external_status = 'completed'
           updateData.completed_quantity = Math.min(result.currentCount, order.ordered_quantity)

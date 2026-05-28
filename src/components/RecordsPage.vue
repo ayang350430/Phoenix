@@ -1,5 +1,6 @@
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
+import { ElMessageBox, ElMessage } from 'element-plus'
 
 // v-click-outside 指令
 const vClickOutside = {
@@ -15,7 +16,7 @@ const vClickOutside = {
 }
 
 const ws = inject('workspace')
-const { getToken, refreshKey, isAdmin } = ws
+const { getToken, refreshKey, isAdmin, isAgent, fetchBalance } = ws
 
 // ========== 统计 ==========
 const batchTotal = ref(0)
@@ -258,10 +259,10 @@ async function doRefund() {
     const data = await res.json()
     if (data.code === 0) {
       if (data.refunded) {
-        // 直接退款完成，刷新数据
         showToast(data.message || '退款成功')
         closeDrawer()
         fetchBatches()
+        fetchBalance()
       } else {
         hasPendingRefund.value = true
         showToast(data.message || '退款申请已提交')
@@ -293,10 +294,10 @@ async function doOrderRefund(order) {
     const data = await res.json()
     if (data.code === 0) {
       if (data.refunded) {
-        // 直接退款完成，刷新抽屉数据
         showToast(data.message || '退款成功')
         if (drawerBatch.value) openBatchDrawer(drawerBatch.value)
         fetchBatches()
+        fetchBalance()
       } else {
         pendingOrderIds.value.push(order.id)
         showToast(data.message || '退款申请已提交')
@@ -405,30 +406,50 @@ async function exportBatchOrders(batch, e) {
   }
 }
 
-// ========== 补单记录 ==========
+// ========== 补单记录（按批次分组） ==========
 const supBatches = ref([])
 const supTotal = ref(0)
 const supPage = ref(1)
-const supPageSize = 5
+const supPageSize = 10
 const supLoading = ref(false)
-const supSearchOrderNo = ref('')
 const supSearchStatus = ref('')
 const repStatusConf = {
-  pending:   { label: '待审核', color: '#f5a623', bg: '#fff7e6' },
-  approved:  { label: '已批准', color: '#5b8def', bg: '#eef3ff' },
-  rejected:  { label: '已驳回', color: '#ff4d4f', bg: '#fff1f0' },
-  completed: { label: '已完成', color: '#42c978', bg: '#f0fff4' },
-  created:   { label: '待审核', color: '#f5a623', bg: '#fff7e6' }
+  pending:        { label: '待审核', color: '#f5a623', bg: '#fff7e6' },
+  created:        { label: '待审核', color: '#f5a623', bg: '#fff7e6' },
+  agent_approved: { label: '代理已批准', color: '#8b7bf7', bg: '#f4f0ff' },
+  approved:       { label: '已批准', color: '#5b8def', bg: '#eef3ff' },
+  processing:     { label: '处理中', color: '#5b8def', bg: '#eef3ff' },
+  rejected:       { label: '已驳回', color: '#ff4d4f', bg: '#fff1f0' },
+  completed:      { label: '已完成', color: '#42c978', bg: '#f0fff4' }
 }
 function rsc(s) { return repStatusConf[s] || repStatusConf.pending }
+
+function batchApprovableCount(batch) {
+  if (isAdmin.value) return (batch.pending_count || 0) + (batch.agent_approved_count || 0)
+  if (isAgent.value) return batch.pending_count || 0
+  return 0
+}
+
+function canApproveRecord(r) {
+  if (isAdmin.value) return ['pending', 'created', 'agent_approved'].includes(r.status)
+  if (isAgent.value) return ['pending', 'created'].includes(r.status)
+  return false
+}
+
+function supBatchHint(sb) {
+  if (sb.pending_count > 0) return { text: '待审核', cls: 'hint-warn' }
+  if (sb.agent_approved_count > 0) return { text: '等待管理员审核', cls: 'hint-purple' }
+  if (sb.processing_count > 0) return { text: '补单处理中', cls: 'hint-blue' }
+  if (sb.rejected_count > 0 && sb.rejected_count === sb.total_count) return { text: '已驳回', cls: 'hint-red' }
+  return null
+}
 
 async function fetchSupplements() {
   supLoading.value = true
   try {
     const q = new URLSearchParams({ page: supPage.value, pageSize: supPageSize })
-    if (supSearchOrderNo.value.trim()) q.set('order_no', supSearchOrderNo.value.trim())
     if (supSearchStatus.value) q.set('status', supSearchStatus.value)
-    const res = await fetch(`/api/tasks/supplements?${q}`, {
+    const res = await fetch(`/api/tasks/supplements/by-batch?${q}`, {
       headers: { Authorization: `Bearer ${getToken()}` }
     })
     const data = await res.json()
@@ -443,18 +464,66 @@ async function fetchSupplements() {
 function supDoSearch() { supPage.value = 1; fetchSupplements() }
 
 function supReset() {
-  supSearchOrderNo.value = ''
   supSearchStatus.value = ''
   supPage.value = 1
   fetchSupplements()
 }
 
-// 管理员审批
+// 补单详情抽屉
+const supDrawerShow = ref(false)
+const supDrawerBatch = ref(null)
+const supDrawerRecords = ref([])
+const supDrawerLoading = ref(false)
+
+async function openSupDrawer(batch) {
+  supDrawerBatch.value = batch
+  supDrawerShow.value = true
+  supDrawerLoading.value = true
+  supDrawerRecords.value = []
+  try {
+    const res = await fetch(`/api/tasks/supplements/batch/${batch.batch_id}`, {
+      headers: { Authorization: `Bearer ${getToken()}` }
+    })
+    const data = await res.json()
+    if (data.code === 0) {
+      supDrawerRecords.value = data.data || []
+    }
+  } catch { /* ignore */ }
+  finally { supDrawerLoading.value = false }
+}
+
+function closeSupDrawer() { supDrawerShow.value = false }
+
+async function goToBatch(batchId) {
+  closeSupDrawer()
+  activeModule.value = 'orders'
+  await fetchBatches()
+  const b = batches.value.find(x => x.id === batchId)
+  if (b) openBatchDrawer(b)
+}
+
+async function goToOrder(batchId, orderNo) {
+  closeSupDrawer()
+  activeModule.value = 'orders'
+  await fetchBatches()
+  const b = batches.value.find(x => x.id === batchId)
+  if (b) {
+    await openBatchDrawer(b)
+    await new Promise(r => setTimeout(r, 200))
+    const el = document.querySelector(`[data-order-no="${orderNo}"]`)
+    if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.classList.add('highlight-pulse'); setTimeout(() => el.classList.remove('highlight-pulse'), 2000) }
+  }
+}
+
+// 审批
 const approvingId = ref(null)
+const batchApproving = ref(null)
 
 async function approveSupplement(record) {
   if (approvingId.value) return
-  if (!confirm('确认批准该补单申请？')) return
+  try {
+    await ElMessageBox.confirm('确认批准该补单申请？', '审批确认', { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' })
+  } catch { return }
   approvingId.value = record.id
   try {
     const res = await fetch(`/api/batch/supplement/${record.id}/approve`, {
@@ -463,16 +532,21 @@ async function approveSupplement(record) {
     })
     const data = await res.json()
     if (data.code === 0) {
-      record.status = 'approved'
-    } else { alert(data.message || '操作失败') }
-  } catch { alert('请求失败') }
+      ElMessage.success(data.message || '已批准')
+      if (supDrawerBatch.value) openSupDrawer(supDrawerBatch.value)
+      fetchSupplements()
+    } else { ElMessage.error(data.message || '操作失败') }
+  } catch { ElMessage.error('请求失败') }
   finally { approvingId.value = null }
 }
 
 async function rejectSupplement(record) {
   if (approvingId.value) return
-  const reason = prompt('驳回原因（可选）：')
-  if (reason === null) return
+  let reason = ''
+  try {
+    const { value } = await ElMessageBox.prompt('驳回原因（可选）：', '驳回补单', { confirmButtonText: '确认驳回', cancelButtonText: '取消', inputPlaceholder: '请输入原因' })
+    reason = value || ''
+  } catch { return }
   approvingId.value = record.id
   try {
     const res = await fetch(`/api/batch/supplement/${record.id}/reject`, {
@@ -481,14 +555,56 @@ async function rejectSupplement(record) {
         Authorization: `Bearer ${getToken()}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({ reason: reason || '' })
+      body: JSON.stringify({ reason })
     })
     const data = await res.json()
     if (data.code === 0) {
-      record.status = 'rejected'
-    } else { alert(data.message || '操作失败') }
-  } catch { alert('请求失败') }
+      ElMessage.success('已驳回')
+      if (supDrawerBatch.value) openSupDrawer(supDrawerBatch.value)
+      fetchSupplements()
+    } else { ElMessage.error(data.message || '操作失败') }
+  } catch { ElMessage.error('请求失败') }
   finally { approvingId.value = null }
+}
+
+async function approveAllBatch(batch) {
+  if (batchApproving.value) return
+  const cnt = batchApprovableCount(batch)
+  try {
+    await ElMessageBox.confirm(`确认一键批准该批次（${batch.batch_no}）${cnt} 条待审核补单？`, '批量审批', { confirmButtonText: '确定', cancelButtonText: '取消', type: 'warning' })
+  } catch { return }
+  batchApproving.value = batch.batch_id
+  try {
+    const res = await fetch(`/api/tasks/supplements/batch/${batch.batch_id}`, {
+      headers: { Authorization: `Bearer ${getToken()}` }
+    })
+    const data = await res.json()
+    if (data.code !== 0) { ElMessage.error('获取补单列表失败'); return }
+    const records = data.data || []
+    const approvable = isAdmin.value
+      ? ['pending', 'created', 'agent_approved']
+      : (isAgent.value ? ['pending', 'created'] : [])
+    const toApprove = records.filter(r => approvable.includes(r.status))
+    if (toApprove.length === 0) { ElMessage.info('没有可审批的补单'); return }
+    let ok = 0, fail = 0
+    for (const r of toApprove) {
+      try {
+        const resp = await fetch(`/api/batch/supplement/${r.id}/approve`, {
+          method: 'PUT',
+          headers: { Authorization: `Bearer ${getToken()}` }
+        })
+        const d = await resp.json()
+        if (d.code === 0) ok++; else fail++
+      } catch { fail++ }
+    }
+    if (ok > 0) ElMessage.success(`已批准 ${ok} 条${fail > 0 ? `，${fail} 条失败` : ''}`)
+    else if (fail > 0) ElMessage.error(`${fail} 条审批失败`)
+    fetchSupplements()
+    if (supDrawerShow.value && supDrawerBatch.value?.batch_id === batch.batch_id) {
+      openSupDrawer(batch)
+    }
+  } catch { ElMessage.error('请求失败') }
+  finally { batchApproving.value = null }
 }
 
 
@@ -508,46 +624,58 @@ onMounted(() => {
   <div class="records-page">
     <!-- 顶部统计 -->
     <div class="stats-row">
-      <div class="stat-card">
-        <div class="stat-icon icon-batch">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-        </div>
-        <div class="stat-text">
+      <div class="stat-card card-batch">
+        <div class="stat-top">
+          <div class="stat-icon icon-batch">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          </div>
           <span class="stat-label">批次数</span>
-          <strong class="stat-value">{{ batchTotal }}</strong>
         </div>
+        <strong class="stat-value">{{ batchTotal }}</strong>
       </div>
-      <div class="stat-card">
-        <div class="stat-icon icon-orders">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
-        </div>
-        <div class="stat-text">
+      <div class="stat-card card-orders">
+        <div class="stat-top">
+          <div class="stat-icon icon-orders">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          </div>
           <span class="stat-label">订单总数</span>
-          <strong class="stat-value">{{ orderTotal }}</strong>
         </div>
+        <strong class="stat-value">{{ orderTotal }}</strong>
       </div>
-      <div class="stat-card">
-        <div class="stat-icon icon-processing">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="9"/></svg>
-        </div>
-        <div class="stat-text">
+      <div class="stat-card card-processing">
+        <div class="stat-top">
+          <div class="stat-icon icon-processing">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="9"/></svg>
+          </div>
           <span class="stat-label">进行中</span>
-          <strong class="stat-value">{{ processingCount }}</strong>
         </div>
+        <strong class="stat-value">{{ processingCount }}</strong>
       </div>
-      <div class="stat-card">
-        <div class="stat-icon icon-spent">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-        </div>
-        <div class="stat-text">
+      <div class="stat-card card-spent">
+        <div class="stat-top">
+          <div class="stat-icon icon-spent">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+          </div>
           <span class="stat-label">累计消费</span>
-          <strong class="stat-value spent">¥ {{ fmtMoney(totalSpent) }}</strong>
         </div>
+        <strong class="stat-value spent">¥ {{ fmtMoney(totalSpent) }}</strong>
       </div>
     </div>
 
     <!-- 主体 -->
     <section class="records-body">
+      <!-- 移动端 tab 导航 -->
+      <div class="mobile-tabs">
+        <button
+          v-for="opt in moduleOptions"
+          :key="opt.key"
+          type="button"
+          class="mobile-tab"
+          :class="{ active: activeModule === opt.key }"
+          @click="switchModule(opt.key)"
+        >{{ opt.label }}</button>
+      </div>
+
       <!-- 筛选栏 -->
       <div class="filter-bar">
         <div class="filter-left">
@@ -587,11 +715,11 @@ onMounted(() => {
 
           <!-- 补单记录筛选 -->
           <div v-else class="filter-inputs">
-            <input v-model="supSearchOrderNo" placeholder="订单号" @keyup.enter="supDoSearch" />
             <select v-model="supSearchStatus" class="filter-select" @change="supDoSearch">
               <option value="">全部状态</option>
               <option value="pending">待审核</option>
-              <option value="approved">已批准</option>
+              <option value="agent_approved">代理已批准</option>
+              <option value="processing">处理中</option>
               <option value="rejected">已驳回</option>
               <option value="completed">已完成</option>
             </select>
@@ -626,6 +754,25 @@ onMounted(() => {
                   提交时间: {{ fmtTime(batch.created_at) }}
                   <span v-if="batch.has_upstream === false" class="no-upstream-hint">请下载文件联系客服</span>
                 </div>
+                <!-- 移动端统计网格 -->
+                <div class="mobile-stat-grid">
+                  <div class="msg-cell">
+                    <span class="msg-label">总数</span>
+                    <strong class="msg-val">{{ batch.total_count || 0 }}</strong>
+                  </div>
+                  <div class="msg-cell">
+                    <span class="msg-label">成功</span>
+                    <strong class="msg-val ok">{{ batch.succeeded_count || 0 }}</strong>
+                  </div>
+                  <div class="msg-cell">
+                    <span class="msg-label">失败</span>
+                    <strong class="msg-val" :class="{ fail: batch.failed_count > 0 }">{{ batch.failed_count || 0 }}</strong>
+                  </div>
+                  <div class="msg-cell amount">
+                    <span class="msg-label">实际付款金额</span>
+                    <strong class="msg-val accent">¥ {{ fmtMoney(batch.estimated_amount) }}</strong>
+                  </div>
+                </div>
               </div>
               <div class="batch-stat">
                 <span class="stat-lbl">总数</span>
@@ -644,25 +791,32 @@ onMounted(() => {
                 <strong>¥ {{ fmtMoney(batch.estimated_amount) }}</strong>
               </div>
               <div class="batch-action">
-                <button
-                  class="export-icon-btn"
-                  :class="{ loading: exporting[batch.id] }"
-                  :disabled="exporting[batch.id]"
-                  title="导出订单 CSV"
-                  @click="exportBatchOrders(batch, $event)"
-                >
-                  <svg v-if="!exporting[batch.id]" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                  <svg v-else class="spin-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 2a10 10 0 0 1 10 10"/></svg>
-                </button>
-                <span
-                  class="status-pill"
-                  :style="{
-                    color: sc(batch.status).color,
-                    background: sc(batch.status).bg,
-                    borderColor: sc(batch.status).color
-                  }"
-                >{{ sc(batch.status).label }}</span>
+                <div class="flex_tab">
+                  <button
+                    class="export-icon-btn"
+                    :class="{ loading: exporting[batch.id] }"
+                    :disabled="exporting[batch.id]"
+                    title="导出订单 CSV"
+                    @click="exportBatchOrders(batch, $event)"
+                  >
+                    <svg v-if="!exporting[batch.id]" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    <svg v-else class="spin-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 2a10 10 0 0 1 10 10"/></svg>
+                  </button>
+                  <span
+                    class="status-pill"
+                    :style="{
+                      color: sc(batch.status).color,
+                      background: sc(batch.status).bg,
+                      borderColor: sc(batch.status).color
+                    }"
+                    style="margin-left: 6px;"
+                  >{{ sc(batch.status).label }}</span>
+                </div>
                 <svg class="arrow-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+                <div class="action-amount">
+                  <span class="msg-label">实际付款金额</span>
+                  <strong class="msg-val accent">¥ {{ fmtMoney(batch.estimated_amount) }}</strong>
+                </div>
               </div>
             </div>
           </template>
@@ -682,71 +836,75 @@ onMounted(() => {
         </div>
       </template>
 
-      <!-- ===== 补单记录模块 ===== -->
+      <!-- ===== 补单记录模块（按批次分组） ===== -->
       <template v-else-if="activeModule === 'supplements'">
-        <div class="sup-table-wrap">
-          <table class="sup-table">
-            <thead>
-              <tr>
-                <th>补单编号</th>
-                <th>订单号</th>
-                <th v-if="isAdmin">用户</th>
-                <th>类型</th>
-                <th>下单数</th>
-                <th>实际数</th>
-                <th>差额</th>
-                <th>状态</th>
-                <th v-if="isAdmin">操作</th>
-                <th>申请时间</th>
-              </tr>
-            </thead>
-            <tbody v-if="!supLoading">
-              <tr v-for="r in supBatches" :key="r.id">
-                <td class="mono">{{ r.replenishment_no || '-' }}</td>
-                <td class="mono">{{ r.order_no }}</td>
-                <td v-if="isAdmin">
-                  <strong>{{ r.username }}</strong>
-                  <small v-if="r.nickname">（{{ r.nickname }}）</small>
-                </td>
-                <td><span class="tag type-tag">{{ pn(r) }}</span></td>
-                <td class="center">{{ r.ordered_quantity || 0 }}</td>
-                <td class="center ok-num">{{ r.actual_quantity || 0 }}</td>
-                <td class="center fail-num">{{ r.shortage_quantity || 0 }}</td>
-                <td>
-                  <span
-                    class="status-pill"
-                    :style="{
-                      color: rsc(r.status).color,
-                      background: rsc(r.status).bg,
-                      borderColor: rsc(r.status).color
-                    }"
-                  >{{ rsc(r.status).label }}</span>
-                </td>
-                <td v-if="isAdmin">
-                  <div v-if="r.status === 'pending' || r.status === 'created'" class="sup-actions">
-                    <button
-                      type="button"
-                      class="btn-approve"
-                      :disabled="!!approvingId"
-                      @click.stop="approveSupplement(r)"
-                    >批准</button>
-                    <button
-                      type="button"
-                      class="btn-reject"
-                      :disabled="!!approvingId"
-                      @click.stop="rejectSupplement(r)"
-                    >驳回</button>
-                  </div>
-                  <span v-else class="sup-done-hint">
-                    {{ r.status === 'rejected' && r.reason_message ? r.reason_message : '-' }}
-                  </span>
-                </td>
-                <td class="time-cell">{{ fmtTime(r.requested_at || r.created_at) }}</td>
-              </tr>
-            </tbody>
-          </table>
+        <div class="batch-list">
           <div v-if="supLoading" class="empty-state">加载中...</div>
-          <div v-if="!supLoading && supBatches.length === 0" class="empty-state">暂无补单记录</div>
+          <template v-else-if="supBatches.length">
+            <div
+              v-for="sb in supBatches"
+              :key="sb.batch_id"
+              class="batch-row sup-batch-row"
+              @click="openSupDrawer(sb)"
+            >
+              <div class="batch-info">
+                <div class="batch-head">
+                  <a class="batch-no sup-link" @click.stop="goToBatch(sb.batch_id)" title="查看批次订单">{{ sb.batch_no }}</a>
+                  <span class="tag type-tag">{{ sb.source_type || '补单' }}</span>
+                  <span v-if="(isAdmin || isAgent) && sb.username" class="tag user-tag">{{ sb.nickname || sb.username }}</span>
+                </div>
+                <div class="batch-time">
+                  申请时间: {{ fmtTime(sb.earliest_at) }}
+                  <span v-if="supBatchHint(sb)" class="sup-hint" :class="supBatchHint(sb).cls">{{ supBatchHint(sb).text }}</span>
+                </div>
+                <!-- 移动端统计网格 -->
+                <div class="mobile-stat-grid sup-grid">
+                  <div class="msg-cell">
+                    <span class="msg-label">补单数</span>
+                    <strong class="msg-val">{{ sb.total_count }}</strong>
+                  </div>
+                  <div class="msg-cell">
+                    <span class="msg-label">待审核</span>
+                    <strong class="msg-val" :class="{ fail: sb.pending_count > 0 }">{{ sb.pending_count }}</strong>
+                  </div>
+                  <div v-if="isAdmin" class="msg-cell">
+                    <span class="msg-label">代理已批</span>
+                    <strong class="msg-val ok">{{ sb.agent_approved_count }}</strong>
+                  </div>
+                  <!-- <div class="msg-cell">
+                    <span class="msg-label">差额总量</span>
+                    <strong class="msg-val fail">{{ sb.total_shortage }}</strong>
+                  </div> -->
+                </div>
+              </div>
+              <div class="batch-stat">
+                <span class="stat-lbl">补单数</span>
+                <strong>{{ sb.total_count }}</strong>
+              </div>
+              <div class="batch-stat">
+                <span class="stat-lbl">待审核</span>
+                <strong :class="{ 'fail-num': sb.pending_count > 0 }">{{ sb.pending_count }}</strong>
+              </div>
+              <div class="batch-stat" v-if="isAdmin">
+                <span class="stat-lbl">代理已批</span>
+                <strong :class="{ 'ok-num': sb.agent_approved_count > 0 }">{{ sb.agent_approved_count }}</strong>
+              </div>
+              <div class="batch-stat">
+                <span class="stat-lbl">差额总量</span>
+                <strong class="fail-num">{{ sb.total_shortage }}</strong>
+              </div>
+              <div class="batch-action">
+                <button
+                  v-if="(isAdmin || isAgent) && batchApprovableCount(sb) > 0"
+                  class="btn-approve-all"
+                  :disabled="batchApproving === sb.batch_id"
+                  @click.stop="approveAllBatch(sb)"
+                >{{ batchApproving === sb.batch_id ? '处理中...' : `一键同意(${batchApprovableCount(sb)})` }}</button>
+                <svg class="arrow-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+              </div>
+            </div>
+          </template>
+          <div v-else class="empty-state">暂无补单记录</div>
         </div>
 
         <div class="pagination-wrap">
@@ -842,7 +1000,7 @@ onMounted(() => {
                 <span>加载中...</span>
               </div>
               <template v-else-if="drawerOrders.length">
-                <div v-for="(order, idx) in drawerOrders" :key="order.id" class="order-card">
+                <div v-for="(order, idx) in drawerOrders" :key="order.id" class="order-card" :data-order-no="order.order_no">
                   <div class="oc-head">
                     <span class="oc-idx">#{{ idx + 1 }}</span>
                     <span class="oc-no mono">{{ order.order_no }}</span>
@@ -968,6 +1126,100 @@ onMounted(() => {
       </div>
     </Transition>
 
+    <!-- 补单详情抽屉 -->
+    <Transition name="drawer-fade">
+      <div v-if="supDrawerShow" class="drawer-mask" @click.self="closeSupDrawer">
+        <Transition name="drawer-slide">
+          <div v-if="supDrawerShow" class="order-drawer sup-drawer">
+            <div class="drawer-header sup-drawer-header">
+              <div class="drawer-title-row">
+                <h3>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+                  补单明细
+                </h3>
+                <div class="drawer-title-actions">
+                  <button
+                    v-if="(isAdmin || isAgent) && supDrawerBatch && batchApprovableCount(supDrawerBatch) > 0"
+                    class="btn-approve-all"
+                    :disabled="!!batchApproving"
+                    @click="approveAllBatch(supDrawerBatch)"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    一键同意 ({{ batchApprovableCount(supDrawerBatch) }})
+                  </button>
+                  <button class="drawer-close" @click="closeSupDrawer">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </div>
+              </div>
+              <div v-if="supDrawerBatch" class="sup-drawer-meta">
+                <a class="sup-drawer-batch-link" @click="goToBatch(supDrawerBatch.batch_id)" title="查看批次订单">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                  {{ supDrawerBatch.batch_no }}
+                </a>
+                <div class="sup-drawer-chips">
+                  <div class="sd-chip"><span>补单</span><strong>{{ supDrawerBatch.total_count }}</strong></div>
+                  <div class="sd-chip warn"><span>待审</span><strong>{{ supDrawerBatch.pending_count }}</strong></div>
+                  <div v-if="isAdmin" class="sd-chip purple"><span>代理批</span><strong>{{ supDrawerBatch.agent_approved_count }}</strong></div>
+                  <div class="sd-chip danger"><span>差额</span><strong>{{ supDrawerBatch.total_shortage }}</strong></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="drawer-drag-bar"><span></span></div>
+
+            <div class="drawer-body">
+              <div v-if="supDrawerLoading" class="drawer-loading">
+                <div class="spinner"></div>
+                <span>加载中...</span>
+              </div>
+              <template v-else-if="supDrawerRecords.length">
+                <div v-for="(r, idx) in supDrawerRecords" :key="r.id" class="sup-card" :class="{ 'sup-card--approvable': canApproveRecord(r) }">
+                  <div class="sup-card-head">
+                    <span class="sup-card-idx">#{{ idx + 1 }}</span>
+                    <a class="sup-card-order sup-link" @click.stop="goToOrder(r.batch_id, r.order_no)" title="查看订单">{{ r.order_no }}</a>
+                    <span
+                      class="status-pill small"
+                      :style="{ color: rsc(r.status).color, background: rsc(r.status).bg, borderColor: rsc(r.status).color }"
+                    >{{ rsc(r.status).label }}</span>
+                  </div>
+                  <div class="sup-card-body">
+                    <div class="sup-card-field">
+                      <span class="sup-card-label">产品</span>
+                      <span class="sup-card-val">{{ r.product_name || '-' }}</span>
+                    </div>
+                    <div class="sup-card-field">
+                      <span class="sup-card-label">差额</span>
+                      <strong class="sup-card-val fail-num">{{ r.shortage_quantity || 0 }}</strong>
+                    </div>
+                    <div class="sup-card-field">
+                      <span class="sup-card-label">时间</span>
+                      <span class="sup-card-val sup-card-time">{{ fmtTime(r.created_at) }}</span>
+                    </div>
+                  </div>
+                  <div v-if="canApproveRecord(r)" class="sup-card-actions">
+                    <button type="button" class="btn-approve" :disabled="!!approvingId" @click.stop="approveSupplement(r)">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                      {{ approvingId === r.id ? '处理中...' : '同意' }}
+                    </button>
+                    <button type="button" class="btn-reject" :disabled="!!approvingId" @click.stop="rejectSupplement(r)">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                      驳回
+                    </button>
+                  </div>
+                  <div v-else-if="r.status === 'rejected' && r.reason_message" class="sup-card-rejected">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                    {{ r.reason_message }}
+                  </div>
+                </div>
+              </template>
+              <div v-else class="drawer-empty">暂无补单数据</div>
+            </div>
+          </div>
+        </Transition>
+      </div>
+    </Transition>
+
     <!-- 自定义确认弹窗 -->
     <Transition name="modal-fade">
       <div v-if="confirmModal.show" class="custom-modal-mask" @click.self="confirmCancel">
@@ -1004,9 +1256,10 @@ onMounted(() => {
 
 .stat-card {
   display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 22px 24px;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 20px 22px;
+  min-height: 110px;
   background: #fff;
   border-radius: 12px;
   box-shadow: 0 4px 18px rgba(21, 32, 51, 0.06);
@@ -1018,9 +1271,15 @@ onMounted(() => {
   box-shadow: 0 12px 28px rgba(21, 32, 51, 0.1);
 }
 
+.stat-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .stat-icon {
-  width: 48px;
-  height: 48px;
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
   display: grid;
   place-items: center;
@@ -1034,20 +1293,60 @@ onMounted(() => {
 .icon-spent { background: linear-gradient(135deg, #ff6b6b, #ee4d7a); }
 
 .stat-label {
-  display: block;
   font-size: 13px;
   color: #9aa5b5;
-  margin-bottom: 2px;
+  font-weight: 500;
 }
 
 .stat-value {
-  display: block;
+  align-self: flex-start;
+  margin-left: 52px;
   font-size: 28px;
   color: #152033;
-  line-height: 1.2;
+  line-height: 1;
 }
 
 .stat-value.spent { color: #ee4d7a; }
+
+/* ========== 移动端 tab ========== */
+
+.mobile-tabs {
+  display: none;
+  border-bottom: 1px solid #edf1f6;
+}
+
+.mobile-tab {
+  flex: 1;
+  padding: 14px 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: #9aa5b5;
+  background: none;
+  border: none;
+  border-bottom: 2.5px solid transparent;
+  cursor: pointer;
+  transition: all 180ms ease;
+}
+
+.mobile-tab.active {
+  color: #152033;
+  border-bottom-color: #5b8def;
+}
+
+/* ========== 移动端统计网格（默认隐藏） ========== */
+
+.mobile-stat-grid {
+  display: none;
+}
+
+.msg-cell { text-align: center; }
+.msg-label { display: block; font-size: 11px; color: #9aa5b5; margin-bottom: 2px; }
+.msg-val { display: block; font-size: 18px; font-weight: 800; color: #152033; }
+.msg-val.ok { color: #42c978; }
+.msg-val.fail { color: #ff4d4f; }
+.msg-val.accent { color: #5b8def; font-size: 15px; }
+.msg-cell.amount .msg-label { white-space: nowrap; }
+.action-amount { display: none; }
 
 /* ========== 主体卡片 ========== */
 
@@ -1398,6 +1697,12 @@ onMounted(() => {
   gap: 10px;
 }
 
+.batch-action .flex_tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -1462,53 +1767,265 @@ onMounted(() => {
   color: #fff;
 }
 
-.sup-table-wrap {
-  padding: 0 24px 24px;
-  overflow-x: auto;
+/* 补单批次行 */
+.sup-batch-row {
+  --bdr: #8b7bf7;
+  --prog: 0%;
+  --prog-color: #8b7bf7;
 }
 
-.sup-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
+.sup-batch-row .batch-info .batch-head .user-tag {
+  background: #f4f0ff;
+  color: #8b7bf7;
+  border: 1px solid #d4ccf7;
+}
+
+/* 补单状态提示 */
+.sup-hint {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 10px;
+  padding: 2px 10px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 700;
   white-space: nowrap;
 }
 
-.sup-table th {
-  padding: 12px 14px;
-  text-align: left;
-  background: #f6f8fc;
-  color: #647184;
+.hint-warn { background: #fff7e6; color: #f5a623; }
+.hint-purple { background: #f4f0ff; color: #8b7bf7; }
+.hint-blue { background: #eef3ff; color: #5b8def; }
+.hint-red { background: #fff1f0; color: #ff4d4f; }
+
+/* 可点击链接 */
+.sup-link {
+  color: #5b8def;
+  cursor: pointer;
+  text-decoration: none;
+  transition: color 160ms ease;
+}
+
+.sup-link:hover {
+  color: #8b7bf7;
+  text-decoration: underline;
+}
+
+/* 一键同意按钮 */
+.btn-approve-all {
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 6px;
+  border: none;
+  background: linear-gradient(135deg, #42c978, #38b2ac);
+  color: #fff;
+  font-size: 13px;
   font-weight: 700;
-  border-bottom: 2px solid #e8edf4;
+  cursor: pointer;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: opacity 200ms ease, transform 200ms ease, box-shadow 200ms ease;
 }
 
-.sup-table td {
-  padding: 14px 14px;
-  border-bottom: 1px solid #f0f2f5;
-  color: #425066;
+.btn-approve-all:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(66, 201, 120, 0.3);
 }
 
-.sup-table tbody tr {
-  transition: background 160ms ease;
+.btn-approve-all:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
 }
 
-.sup-table tbody tr:hover {
-  background: #f9fafc;
+/* ========== 补单抽屉 ========== */
+
+.sup-drawer-header {
+  border-bottom: none;
+  padding-bottom: 0;
 }
 
-.sup-table .mono {
-  font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+.sup-drawer-header h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sup-drawer-header h3 svg {
+  color: #8b7bf7;
+}
+
+.sup-drawer-meta {
+  padding: 12px 0 0;
+}
+
+.sup-drawer-batch-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  font-size: 13px;
+  color: #5b8def;
+  cursor: pointer;
+  margin-bottom: 12px;
+  transition: color 160ms ease;
+}
+
+.sup-drawer-batch-link:hover {
+  color: #8b7bf7;
+  text-decoration: underline;
+}
+
+.sup-drawer-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sd-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: #f6f8fc;
   font-size: 12px;
+  color: #647184;
 }
 
-.sup-table .center { text-align: center; }
-.sup-table .ok-num { color: #42c978; font-weight: 700; }
-.sup-table .fail-num { color: #ff4d4f; font-weight: 700; }
+.sd-chip strong {
+  font-size: 15px;
+  color: #152033;
+}
 
-.sup-table td small {
+.sd-chip.warn { background: #fff7e6; }
+.sd-chip.warn strong { color: #f5a623; }
+.sd-chip.purple { background: #f4f0ff; }
+.sd-chip.purple strong { color: #8b7bf7; }
+.sd-chip.danger { background: #fff1f0; }
+.sd-chip.danger strong { color: #ff4d4f; }
+
+/* 补单记录卡片 */
+.sup-card {
+  background: #fff;
+  border: 1px solid #eef0f5;
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 12px;
+  transition: border-color 200ms ease, box-shadow 200ms ease;
+}
+
+.sup-card:hover {
+  border-color: #d4ccf7;
+  box-shadow: 0 2px 12px rgba(139, 123, 247, 0.08);
+}
+
+.sup-card--approvable {
+  border-left: 3px solid #8b7bf7;
+}
+
+.sup-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.sup-card-idx {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #8b7bf7, #6c5ce7);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+
+.sup-card-order {
+  font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.sup-card-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px dashed #eef0f5;
+  border-bottom: 1px dashed #eef0f5;
+}
+
+.sup-card-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sup-card-label {
+  font-size: 11px;
   color: #9aa5b5;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.sup-card-val {
+  font-size: 14px;
+  color: #152033;
+  font-weight: 600;
+}
+
+.sup-card-time {
   font-size: 12px;
+  font-weight: 400;
+  color: #647184;
+}
+
+.sup-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.sup-card-actions .btn-approve,
+.sup-card-actions .btn-reject {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.sup-card-rejected {
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: #fff1f0;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #ff4d4f;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 高亮脉冲动画（定位订单时） */
+@keyframes highlight-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(139, 123, 247, 0); }
+  30% { box-shadow: 0 0 0 4px rgba(139, 123, 247, 0.3); }
+  60% { box-shadow: 0 0 0 2px rgba(139, 123, 247, 0.15); }
+}
+
+.highlight-pulse {
+  animation: highlight-pulse 1s ease 2;
+  border-color: #8b7bf7 !important;
 }
 
 .time-cell {
@@ -2163,22 +2680,25 @@ onMounted(() => {
 @media (max-width: 760px) {
   .records-page { padding: 12px; }
 
-  .sup-table-wrap { padding: 0 16px 16px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .sup-table { min-width: 700px; }
-  .sup-table th, .sup-table td { padding: 8px 8px; }
+  .btn-approve-all { height: 28px; padding: 0 10px; font-size: 12px; }
 
   .stats-row { grid-template-columns: 1fr 1fr; gap: 10px; }
-  .stat-card { padding: 14px 16px; gap: 12px; }
-  .stat-icon { width: 40px; height: 40px; }
-  .stat-icon svg { width: 18px; height: 18px; }
-  .stat-value { font-size: 22px; }
+  .stat-card { padding: 14px; min-height: 90px; }
+  .stat-top { gap: 8px; }
+  .stat-icon { width: 32px; height: 32px; }
+  .stat-icon svg { width: 15px; height: 15px; }
+  .stat-label { font-size: 12px; }
+  .stat-value { margin-left: 40px; font-size: 20px; }
 
   .filter-bar {
     flex-direction: column;
     align-items: flex-start;
     gap: 10px;
     padding: 14px 16px;
+    border-top: none;
   }
+
+  .filter-bar::before { display: none; }
 
   .filter-left {
     flex-direction: column;
@@ -2191,23 +2711,85 @@ onMounted(() => {
 
   .module-dropdown { min-width: 100%; }
 
-  .filter-inputs { flex-wrap: wrap; width: 100%; }
-  .filter-inputs input { flex: 1; min-width: 120px; }
+  .filter-inputs {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+    gap: 8px;
+  }
+  .filter-inputs input { width: 100%; min-width: 0; }
+  .filter-inputs .btn-search { grid-column: 1; }
+  .filter-inputs .btn-reset { grid-column: 2; }
+  .filter-inputs .filter-select { grid-column: 1 / -1; }
 
   .batch-list { padding: 12px 16px 16px; }
 
+  .mobile-tabs { display: flex; }
+  .module-select { display: none; }
+
   .batch-row {
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
+    grid-template-columns: 1fr;
+    gap: 0;
     padding: 14px 16px;
   }
 
-  .batch-info { grid-column: 1 / -1; }
+  .batch-info { grid-column: 1; margin-bottom: 0; }
+
+  .batch-stat,
+  .batch-amount { display: none; }
+
+  .mobile-stat-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 4px 0;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid #f0f2f5;
+  }
+
+  .mobile-stat-grid:not(.sup-grid) {
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+
+  .mobile-stat-grid:not(.sup-grid) .msg-cell.amount {
+    display: none;
+  }
+
+  .action-amount {
+    display: block;
+    text-align: right;
+    margin-top: 2px;
+  }
+  .action-amount .msg-label { font-size: 10px; color: #9aa5b5; }
+  .action-amount .msg-val { font-size: 14px; font-weight: 700; }
+
+  .batch-head { padding-right: 80px; flex-wrap: wrap; }
+
+  .mobile-stat-grid.sup-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
 
   .batch-action {
-    grid-column: 1 / -1;
-    justify-content: flex-start;
+    grid-column: 1;
+    position: absolute;
+    top: 14px; right: 14px;
+    margin-top: 0;
+    gap: 4px;
+    flex-direction: column;
+    align-items: flex-end;
   }
+
+  .batch-action .arrow-icon { display: none; }
+
+  .batch-action .export-icon-btn {
+    width: 26px; height: 26px; border-radius: 6px;
+  }
+
+  .batch-action .status-pill {
+    font-size: 12px; padding: 3px 10px;
+  }
+
+  .batch-head .batch-no { font-size: 12.5px; }
 
   .pagination-wrap { padding: 8px 16px 16px; }
 
@@ -2262,7 +2844,101 @@ onMounted(() => {
     grid-template-columns: repeat(2, 1fr);
   }
 
-  .sup-table { min-width: 800px; }
+  /* 补单批次行 - 移动端 */
+  .sup-batch-row {
+    grid-template-columns: 1fr;
+    gap: 0;
+    padding: 14px 16px;
+  }
+
+  .sup-batch-row .batch-info {
+    grid-column: 1;
+    margin-bottom: 10px;
+  }
+
+  .sup-batch-row .batch-head {
+    margin-bottom: 4px;
+  }
+
+  .sup-batch-row .batch-head .batch-no {
+    font-size: 12.5px;
+  }
+
+  .sup-batch-row .batch-stat {
+    display: none;
+  }
+
+  .sup-batch-row .batch-action {
+    position: absolute;
+    bottom: 30px; 
+    right: 14px;
+    top: auto;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 6px;
+  }
+
+
+  .batch-action .flex_tab {
+    display: flex;
+    margin-bottom: 10px;
+  }
+
+  .sup-batch-row .batch-action .arrow-icon { display: none; }
+
+  .sup-batch-row .mobile-stat-grid {
+    display: grid;
+    padding-right: 90px;
+  }
+
+  .sup-hint { margin-left: 0; margin-top: 10px; display: block; }
+
+  .sup-batch-row .batch-time {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  /* 补单抽屉 - 移动端 */
+  .sup-drawer-meta { padding-top: 8px; }
+
+  .sup-drawer-batch-link { font-size: 12px; margin-bottom: 8px; }
+
+  .sup-drawer-chips { gap: 6px; }
+
+  .sd-chip { padding: 4px 8px; font-size: 11px; }
+  .sd-chip strong { font-size: 13px; }
+
+  .sup-card { padding: 12px; margin-bottom: 10px; }
+
+  .sup-card-head { margin-bottom: 10px; gap: 6px; flex-wrap: wrap; }
+
+  .sup-card-idx { width: 22px; height: 22px; font-size: 10px; }
+
+  .sup-card-order { font-size: 11.5px; }
+
+  .sup-card-body {
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    padding: 8px 0;
+  }
+
+  .sup-card-field:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .sup-card-label { font-size: 10px; }
+  .sup-card-val { font-size: 13px; }
+
+  .sup-card-actions { margin-top: 10px; gap: 6px; }
+  .sup-card-actions .btn-approve,
+  .sup-card-actions .btn-reject {
+    height: 30px;
+    padding: 0 12px;
+    font-size: 12px;
+  }
 
   /* 底部弹窗动画：上下滑动 */
   .drawer-slide-enter-from {

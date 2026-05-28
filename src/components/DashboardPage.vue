@@ -1015,6 +1015,7 @@ onBeforeUnmount(() => {
 
   /* ---- Notifications mobile ---- */
   .todo-card { min-height: auto; max-height: none; }
+  .notify-list { max-height: 420px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
   .tab-count { display: none; }
   .todo-tabs button { font-size: 13px; padding: 4px 8px; gap: 4px; }
 

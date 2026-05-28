@@ -5,10 +5,15 @@ import { dirname, resolve } from 'path'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 dotenv.config({ path: resolve(__dirname, '../.env') })
 
+if (!process.env.JWT_SECRET) {
+  console.error('\n  [FATAL] 环境变量 JWT_SECRET 未设置！请在 .env 中配置 JWT_SECRET\n')
+  process.exit(1)
+}
+
 export default {
   port: process.env.PORT || 3000,
   jwt: {
-    secret: process.env.JWT_SECRET || 'phoenix-secret-key-change-in-production',
+    secret: process.env.JWT_SECRET,
     expiresIn: '7d'
   },
   db: {
@@ -18,7 +23,8 @@ export default {
       port: Number(process.env.DB_PORT) || 3306,
       user: process.env.DB_USER || 'root',
       password: process.env.DB_PASSWORD || '',
-      database: process.env.DB_NAME || 'phoenix'
+      database: process.env.DB_NAME || 'phoenix',
+      charset: 'utf8mb4'
     },
     pool: { min: 2, max: 10 }
   },

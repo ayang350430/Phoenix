@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'url'
+import path from 'path'
 import express from 'express'
 import cors from 'cors'
 import crypto from 'crypto'
@@ -6,6 +8,7 @@ import User from './models/User.js'
 import { authRequired } from './middleware/auth.js'
 import { startVerifyScheduler } from './services/verifyScheduler.js'
 import { startOrderSyncScheduler } from './services/orderSyncScheduler.js'
+import { ensureSchema } from './schema.js'
 
 // Routes
 import authRoutes from './routes/auth.js'
@@ -51,6 +54,14 @@ app.get('/api/health', (_, res) => {
   res.json({ status: 'ok', time: new Date().toISOString() })
 })
 
+// 静态文件映射（前端构建产物）
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const distPath = path.resolve(__dirname, '..', 'dist')
+app.use(express.static(distPath))
+app.get(/^\/(?!api\/).*/, (req, res) => {
+  res.sendFile(path.join(distPath, 'index.html'))
+})
+
 // 全局错误处理
 app.use((err, req, res, _next) => {
   console.error('[ERROR]', err.message)
@@ -62,6 +73,11 @@ app.listen(config.port, async () => {
   console.log(`\n  Phoenix API running at http://localhost:${config.port}`)
   console.log(`  Database: ${config.db.connection.database}@${config.db.connection.host}`)
   console.log(`  Health check: http://localhost:${config.port}/api/health\n`)
+
+  // 启动时自动建表
+  try {
+    await ensureSchema()
+  } catch (e) { console.error('[SCHEMA] 建表失败:', e.message) }
 
   // 启动时确保必要角色存在
   try {

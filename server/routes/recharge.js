@@ -112,10 +112,11 @@ router.get('/callback', async (req, res) => {
       return res.type('text').send('fail')
     }
 
-    // 事务：更新订单 + 增加余额 + 记录流水
+    // 事务：原子更新防止并发重复入账
     await db.transaction(async (trx) => {
-      await trx('recharge_orders')
-        .where({ id: order.id })
+      // 原子更新：只有 status='pending' 的记录才会被更新，返回受影响行数
+      const affected = await trx('recharge_orders')
+        .where({ id: order.id, status: 'pending' })
         .update({
           status: 'paid',
           pay_type: pay_type || null,
@@ -123,23 +124,27 @@ router.get('/callback', async (req, res) => {
           updated_at: new Date()
         })
 
+      // 已被其他请求处理过，幂等返回
+      if (affected === 0) return
+
+      // 行锁读取余额，防止并发写入
       const balance = await trx('balance_accounts')
         .where({ user_id: order.user_id })
+        .forUpdate()
         .first()
 
       const oldAmount = balance ? parseFloat(balance.available_amount) : 0
       const creditAmount = parseFloat(amount)
-      const newAmount = oldAmount + creditAmount
+      const newAmount = Math.round((oldAmount + creditAmount) * 10000) / 10000
 
       if (balance) {
         await trx('balance_accounts')
           .where({ user_id: order.user_id })
-          .increment('available_amount', creditAmount)
-          .update({ updated_at: new Date() })
+          .update({ available_amount: newAmount, updated_at: new Date() })
       } else {
         await trx('balance_accounts').insert({
           user_id: order.user_id,
-          available_amount: creditAmount,
+          available_amount: newAmount,
           created_at: new Date(),
           updated_at: new Date()
         })
@@ -195,23 +200,26 @@ router.get('/status', authRequired, async (req, res) => {
       const remote = await queryPayment(order_no)
       if (remote.status === 'paid' && order.status !== 'paid') {
         await db.transaction(async (trx) => {
-          await trx('recharge_orders')
-            .where({ id: order.id })
+          // 原子更新：只有 status='pending' 的记录才会被更新
+          const affected = await trx('recharge_orders')
+            .where({ id: order.id, status: 'pending' })
             .update({ status: 'paid', pay_type: remote.pay_type || null, paid_at: new Date(), updated_at: new Date() })
 
-          const balance = await trx('balance_accounts').where({ user_id: order.user_id }).first()
+          // 已被 callback 或其他轮询处理过，幂等跳过
+          if (affected === 0) return
+
+          const balance = await trx('balance_accounts').where({ user_id: order.user_id }).forUpdate().first()
           const oldAmount = balance ? parseFloat(balance.available_amount) : 0
           const creditAmount = parseFloat(order.amount)
-          const newAmount = oldAmount + creditAmount
+          const newAmount = Math.round((oldAmount + creditAmount) * 10000) / 10000
 
           if (balance) {
             await trx('balance_accounts')
               .where({ user_id: order.user_id })
-              .increment('available_amount', creditAmount)
-              .update({ updated_at: new Date() })
+              .update({ available_amount: newAmount, updated_at: new Date() })
           } else {
             await trx('balance_accounts').insert({
-              user_id: order.user_id, available_amount: creditAmount,
+              user_id: order.user_id, available_amount: newAmount,
               created_at: new Date(), updated_at: new Date()
             })
           }

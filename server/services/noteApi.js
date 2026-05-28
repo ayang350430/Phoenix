@@ -1,26 +1,39 @@
 import config from '../config/index.js'
 
-const { baseUrl, timeout, concurrency, proxyLine } = config.noteApi
+const { baseUrl, timeout, concurrency } = config.noteApi
+const PROXY_LINES = ['line_1070', 'line_1086']
+const RETRIES_PER_LINE = 2
 
-// ========== 基础请求 ==========
-
-/**
- * 带超时 + 自动重试的 GET 请求
- * ECONNRESET / ECONNREFUSED / ETIMEDOUT 等网络错误自动重试
- */
-async function get(url, retries = 2) {
-  for (let i = 0; i <= retries; i++) {
+async function get(url) {
+  for (let i = 0; i <= RETRIES_PER_LINE; i++) {
     try {
       const res = await fetch(url, {
         signal: AbortSignal.timeout(timeout),
         keepalive: false
       })
+      if (res.status >= 500) throw Object.assign(new Error(`HTTP ${res.status}`), { status: res.status })
       return await res.json()
     } catch (err) {
-      const isNetErr = ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'UND_ERR_SOCKET', 'fetch failed']
-        .some(k => (err.message || '').includes(k) || (err.cause?.code || '').includes(k))
-      if (isNetErr && i < retries) {
+      const isRetryable = err.status >= 500 ||
+        ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'UND_ERR_SOCKET', 'fetch failed']
+          .some(k => (err.message || '').includes(k) || (err.cause?.code || '').includes(k))
+      if (isRetryable && i < RETRIES_PER_LINE) {
         await new Promise(r => setTimeout(r, 800 * (i + 1)))
+        continue
+      }
+      throw err
+    }
+  }
+}
+
+async function getWithLineFailover(path) {
+  for (let li = 0; li < PROXY_LINES.length; li++) {
+    const url = `${baseUrl}${path}${path.includes('?') ? '&' : '?'}proxy_line=${PROXY_LINES[li]}`
+    try {
+      return await get(url)
+    } catch (err) {
+      if (li < PROXY_LINES.length - 1) {
+        console.warn(`[noteApi] ${PROXY_LINES[li]} 失败，切换 ${PROXY_LINES[li + 1]}`)
         continue
       }
       throw err
@@ -54,7 +67,7 @@ export async function fetchNoteId(noteUrl) {
  */
 export async function fetchNoteBasic(noteId) {
   try {
-    const body = await get(`${baseUrl}/basic?note_id=${noteId}&proxy_line=${proxyLine}`)
+    const body = await getWithLineFailover(`/basic?note_id=${noteId}`)
     if (body.code === 0 && body.data?.base_info) {
       const info = body.data.base_info
       return {
@@ -77,7 +90,7 @@ export async function fetchNoteBasic(noteId) {
  */
 export async function fetchNoteViewCount(noteId) {
   try {
-    const body = await get(`${baseUrl}/realtime?note_id=${noteId}&proxy_line=${proxyLine}`)
+    const body = await getWithLineFailover(`/realtime?note_id=${noteId}`)
     if (body.code === 0 && body.data?.realTime) {
       return {
         view_count: body.data.realTime.viewNum ?? null,
@@ -97,7 +110,7 @@ export async function fetchNoteViewCount(noteId) {
  */
 export async function fetchNoteLikeCount(noteId) {
   try {
-    const body = await get(`${baseUrl}/likes?note_id=${noteId}&proxy_line=${proxyLine}`)
+    const body = await getWithLineFailover(`/likes?note_id=${noteId}`)
     if (body.code === 0 && body.data) {
       return {
         like_count: body.data.likes_num ?? null,

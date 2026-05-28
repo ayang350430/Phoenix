@@ -133,7 +133,7 @@ async function refundSingleOrder(trx, order, userId, ts, idx, fullRefund = false
   if (order.external_task_id) orderUpdate.external_status = 'cancelled'
   await trx('orders').where({ id: order.id }).update(orderUpdate)
 
-  const balAcc = await trx('balance_accounts').where({ user_id: userId }).first()
+  const balAcc = await trx('balance_accounts').where({ user_id: userId }).forUpdate().first()
   const beforeBal = parseFloat(balAcc?.available_amount) || 0
   const afterBal = Math.round((beforeBal + refundAmount) * 10000) / 10000
 

@@ -72,7 +72,7 @@ const navs = computed(() => {
   if (isAdmin.value) return [...baseNavs, '退款申请', '商品管理', '在线客服', '客服配置', '嵌入指南',  '权限管理']
   if (isAgent.value) return [...baseNavs, '退款申请', '商品管理']
   if (isSupport.value) return ['在线客服']
-  return baseNavs
+  return [...baseNavs, '嵌入指南']
 })
 const activeNav = ref('首页')
 
@@ -119,7 +119,6 @@ function handleNav(nav) {
 
 const showMobileNav = ref(false)
 const showUserDrawer = ref(false)
-const searchText = ref('')
 
 function handleMobileNav(nav) {
   showMobileNav.value = false
@@ -277,7 +276,6 @@ function onFullscreenChange() {
 const refreshKey = ref(0)
 
 function refreshPage() {
-  searchText.value = ''
   fetchBalance()
   loadUser()
   refreshKey.value++
@@ -291,8 +289,12 @@ if (isSupport.value && !isAdmin.value && !isAgent.value && route.path !== '/supp
   router.replace('/support')
 }
 
+const balancePollTimer = ref(null)
+const BALANCE_POLL_INTERVAL = 30_000
+
 onMounted(() => {
   fetchBalance()
+  balancePollTimer.value = setInterval(fetchBalance, BALANCE_POLL_INTERVAL)
   document.addEventListener('fullscreenchange', onFullscreenChange)
   const params = new URLSearchParams(window.location.search)
   if (params.get('recharge') === 'success') {
@@ -303,6 +305,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   stopPolling()
+  if (balancePollTimer.value) clearInterval(balancePollTimer.value)
   document.removeEventListener('fullscreenchange', onFullscreenChange)
 })
 
@@ -367,10 +370,6 @@ provide('workspace', {
         <button type="button" class="topbar-btn" @click="refreshPage" title="刷新">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
         </button>
-        <label class="ws-search">
-          <input v-model="searchText" placeholder="搜索任务、链接或记录" />
-          <span>⌕</span>
-        </label>
         <button type="button" class="avatar avatar-button" @click="showUserDrawer = true">
           <img v-if="userAvatar" :src="userAvatar" :alt="userName" class="avatar-img" />
           <span v-else class="avatar-initial">{{ userInitial }}</span>
@@ -711,37 +710,6 @@ provide('workspace', {
 .topbar-btn:active {
   transform: translateY(0) scale(0.92);
   background: rgba(255, 255, 255, 0.3);
-}
-
-.ws-search {
-  width: 250px;
-  height: 34px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 12px;
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.12);
-  transition: width var(--motion-base) var(--motion-soft), background var(--motion-base) ease, border-color var(--motion-base) ease, box-shadow var(--motion-base) ease;
-}
-
-.ws-search:focus-within {
-  border-color: rgba(255, 255, 255, 0.74);
-  background: rgba(255, 255, 255, 0.2);
-  box-shadow: 0 10px 24px rgba(21, 32, 51, 0.12);
-}
-
-.ws-search input {
-  width: 100%;
-  border: 0;
-  outline: 0;
-  color: #fff;
-  background: transparent;
-}
-
-.ws-search input::placeholder {
-  color: rgba(255, 255, 255, 0.72);
 }
 
 /* ========== 头像 ========== */
@@ -1665,8 +1633,7 @@ provide('workspace', {
   .ws-brand img { width: 26px; height: 26px; }
   .ws-brand strong { font-size: 16px; letter-spacing: 0.5px; color: #152033; }
 
-  .ws-actions .topbar-btn,
-  .ws-search { display: none !important; }
+  .ws-actions .topbar-btn { display: none !important; }
 
   .ws-actions {
     grid-column: auto;

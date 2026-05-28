@@ -2,7 +2,7 @@
 import { inject, onMounted, ref, computed } from 'vue'
 
 const ws = inject('workspace')
-const { getToken } = ws
+const { getToken, isAdmin, fetchBalance } = ws
 
 const list = ref([])
 const total = ref(0)
@@ -107,7 +107,7 @@ async function doApprove(item, fullRefund) {
     })
     const data = await res.json()
     showToast(data.message || (data.code === 0 ? '已通过' : '操作失败'))
-    if (data.code === 0) { fetchList(); closeDrawer() }
+    if (data.code === 0) { fetchList(); closeDrawer(); fetchBalance() }
   } catch { showToast('请求失败') }
   finally { processing.value = null }
 }
@@ -266,6 +266,7 @@ onMounted(fetchList)
             <th>申请时间</th>
             <th>审批人</th>
             <th>备注</th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -282,6 +283,13 @@ onMounted(fetchList)
             <td class="time-cell">{{ fmtTime(item.created_at) }}</td>
             <td>{{ item.reviewer_name || '-' }}</td>
             <td class="reason-cell">{{ item.review_remark || '-' }}</td>
+            <td class="action-cell" @click.stop>
+              <template v-if="item.status === 'pending'">
+                <button class="tbl-act-btn approve" :disabled="processing === item.id" @click="handleApprove(item)">通过</button>
+                <button class="tbl-act-btn reject" :disabled="processing === item.id" @click="handleReject(item)">驳回</button>
+              </template>
+              <button v-if="isAdmin" class="tbl-act-btn full-refund" :disabled="processing === item.id" @click="handleFullRefund(item)">全额退款</button>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -328,7 +336,7 @@ onMounted(fetchList)
                 <div class="di-row">
                   <span class="di-label">状态</span>
                   <span class="status-pill" :style="{ color: sc(drawerItem.status).color, background: sc(drawerItem.status).bg }">{{ sc(drawerItem.status).label }}</span>
-                  <button v-if="drawerItem.status === 'pending'" class="act-btn full-refund di-full-refund" :disabled="processing === drawerItem.id" @click="handleFullRefund(drawerItem)">全额退款</button>
+                  <button v-if="isAdmin" class="act-btn full-refund di-full-refund" :disabled="processing === drawerItem.id" @click="handleFullRefund(drawerItem)">全额退款</button>
                 </div>
               </div>
             </div>
@@ -622,6 +630,19 @@ onMounted(fetchList)
   font-size: 11px !important;
   border-radius: 6px !important;
 }
+
+.action-cell { white-space: nowrap; }
+.action-done { color: #9ca3af; }
+.tbl-act-btn {
+  padding: 4px 12px; font-size: 12px; font-weight: 600; border: none; border-radius: 6px;
+  cursor: pointer; transition: opacity .2s; margin-right: 4px;
+}
+.tbl-act-btn:last-child { margin-right: 0; }
+.tbl-act-btn:hover { opacity: .85; }
+.tbl-act-btn:disabled { opacity: .5; cursor: not-allowed; }
+.tbl-act-btn.approve { background: linear-gradient(135deg, #10b981, #34d399); color: #fff; }
+.tbl-act-btn.full-refund { background: linear-gradient(135deg, #f59e0b, #fbbf24); color: #fff; }
+.tbl-act-btn.reject { background: #fee2e2; color: #ef4444; }
 
 .custom-modal-mask {
   position: fixed; inset: 0; background: rgba(0,0,0,.45);

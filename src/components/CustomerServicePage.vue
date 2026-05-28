@@ -132,7 +132,7 @@ async function fetchMessages(initial = false) {
             _playing: false, _dur: 0
           })
         }
-        lastMsgId.value = Math.max(lastMsgId.value, ...msgs.map(m => m.id))
+        if (msgs.length > 0) lastMsgId.value = Math.max(lastMsgId.value, ...msgs.map(m => m.id))
         scrollBottom()
       }
       const conv = conversations.value.find(c => c.id === activeConvId.value)
@@ -512,8 +512,8 @@ onBeforeUnmount(() => {
               <div v-if="msg.role === 'user'" class="msg-ava incoming-ava">{{ displayName(activeConv)[0] }}</div>
               <div class="msg-content">
                 <div v-if="msg.type === 'text'" class="msg-bubble">
-                  <span v-for="(line, li) in msg.content.split('\n')" :key="li">
-                    {{ line }}<br v-if="li < msg.content.split('\n').length - 1" />
+                  <span v-for="(line, li) in String(msg.content ?? '').split('\n')" :key="li">
+                    {{ line }}<br v-if="li < String(msg.content ?? '').split('\n').length - 1" />
                   </span>
                 </div>
                 <div v-else-if="msg.type === 'image'" class="msg-bubble img-bub">

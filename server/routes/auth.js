@@ -9,8 +9,36 @@ import { generateCode, saveCode, verifyCode } from '../utils/resetCodes.js'
 
 const router = Router()
 
+// ========== 简易速率限制（内存，按 IP） ==========
+const loginAttempts = new Map()  // ip -> { count, resetAt }
+const RATE_LIMIT_WINDOW = 15 * 60 * 1000  // 15 分钟
+const RATE_LIMIT_MAX = 10  // 最多 10 次
+
+function checkRateLimit(ip) {
+  const now = Date.now()
+  const entry = loginAttempts.get(ip)
+  if (!entry || now > entry.resetAt) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW })
+    return true
+  }
+  entry.count++
+  return entry.count <= RATE_LIMIT_MAX
+}
+
+// 定期清理过期条目（每 10 分钟）
+setInterval(() => {
+  const now = Date.now()
+  for (const [ip, entry] of loginAttempts) {
+    if (now > entry.resetAt) loginAttempts.delete(ip)
+  }
+}, 10 * 60 * 1000)
+
 // POST /api/auth/login
 router.post('/login', validate({ body: ['username', 'password'] }), async (req, res) => {
+  const clientIp = req.ip || req.socket.remoteAddress
+  if (!checkRateLimit(clientIp)) {
+    return res.status(429).json({ code: 429, message: '登录尝试过于频繁，请 15 分钟后重试' })
+  }
   try {
     const { username, password } = req.body
     const user = await User.findByUsername(username)
@@ -20,6 +48,8 @@ router.post('/login', validate({ body: ['username', 'password'] }), async (req, 
     if (user.status !== 'active') {
       return res.status(403).json({ code: 403, message: '账户已被禁用' })
     }
+    await db('users').where({ id: user.id }).increment('token_version', 1)
+    user.token_version = (user.token_version || 0) + 1
     const token = generateToken(user)
     const balance = await User.getBalance(user.id)
     res.json({
@@ -51,6 +81,9 @@ router.post('/login', validate({ body: ['username', 'password'] }), async (req, 
 router.post('/register', validate({ body: ['username', 'password'] }), async (req, res) => {
   try {
     const { username, password, real_name, nickname, ref: refCode } = req.body
+    if (!password || password.length < 6) {
+      return res.status(400).json({ code: 400, message: '密码至少需要 6 位' })
+    }
     const exists = await User.findByUsername(username)
     if (exists) {
       return res.status(409).json({ code: 409, message: '用户名已存在' })
