@@ -53,6 +53,23 @@ router.get('/conversations', staffRequired, async (req, res) => {
   }
 })
 
+// 管理员：所有聊天记录（含历史）
+router.get('/history', staffRequired, async (req, res) => {
+  try {
+    const roles = req.user?.roles || []
+    const isAdmin = roles.includes('admin') || roles.includes('super')
+    if (!isAdmin) return res.status(403).json({ code: 403, message: '需要管理员权限' })
+    const { page = 1, pageSize = 20, keyword, status } = req.query
+    const result = await Chat.listAllConversations({
+      page: Number(page), pageSize: Number(pageSize), keyword, status
+    })
+    res.json({ code: 0, data: result })
+  } catch (err) {
+    console.error('[chat/history]', err.message)
+    res.status(500).json({ code: 500, message: '获取聊天记录失败' })
+  }
+})
+
 router.get('/conversations/:id/messages', staffRequired, async (req, res) => {
   try {
     const convId = parseInt(req.params.id)

@@ -99,6 +99,48 @@ const Chat = {
       .where({ id: conversationId }).update({ unread_count: 0 })
   },
 
+  async listAllConversations({ page = 1, pageSize = 20, keyword, status } = {}) {
+    await ensureTable()
+    await db('chat_conversations')
+      .where('status', 'open')
+      .where('last_message_at', '<', db.raw("NOW() - INTERVAL 5 MINUTE"))
+      .update({ status: 'closed' })
+    const offset = (page - 1) * pageSize
+    const q = db('chat_conversations')
+      .leftJoin('users', 'users.id', 'chat_conversations.user_id')
+      .select(
+        'chat_conversations.*',
+        'users.username', 'users.nickname', 'users.real_name'
+      )
+    if (status) q.where('chat_conversations.status', status)
+    if (keyword) {
+      q.where(function () {
+        this.where('users.username', 'like', `%${keyword}%`)
+          .orWhere('users.nickname', 'like', `%${keyword}%`)
+          .orWhere('chat_conversations.last_message', 'like', `%${keyword}%`)
+      })
+    }
+    const rows = await q.clone()
+      .orderBy('chat_conversations.last_message_at', 'desc')
+      .limit(pageSize).offset(offset)
+    const [{ total }] = await q.clone().clearSelect().count('chat_conversations.id as total')
+
+    // 附加每个会话的消息数
+    if (rows.length > 0) {
+      const convIds = rows.map(r => r.id)
+      const counts = await db('chat_messages')
+        .whereIn('conversation_id', convIds)
+        .select('conversation_id')
+        .count('id as msg_count')
+        .groupBy('conversation_id')
+      const countMap = Object.fromEntries(counts.map(c => [c.conversation_id, Number(c.msg_count)]))
+      for (const row of rows) {
+        row.msg_count = countMap[row.id] || 0
+      }
+    }
+    return { rows, total }
+  },
+
   async getConversation(id) {
     await ensureTable()
     return db('chat_conversations').where({ id }).first()

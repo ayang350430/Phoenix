@@ -463,8 +463,17 @@ router.get('/:id/orders', authRequired, async (req, res) => {
     // 权限校验
     const batch = await db('order_batches').where({ id: batchDbId }).first()
     if (!batch) return res.status(404).json({ code: 404, message: '批次不存在' })
+    const isAgent = roles.includes('agent')
     if (!isAdmin && batch.user_id !== userId) {
-      return res.status(403).json({ code: 403, message: '无权访问' })
+      if (isAgent) {
+        const referred = await db('users').where({ referred_by: userId }).select('id')
+        const referredIds = referred.map(u => u.id)
+        if (!referredIds.includes(batch.user_id)) {
+          return res.status(403).json({ code: 403, message: '无权访问' })
+        }
+      } else {
+        return res.status(403).json({ code: 403, message: '无权访问' })
+      }
     }
 
     const chargeSummary = db('account_records')

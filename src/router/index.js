@@ -36,7 +36,7 @@ const routes = [
     path: '/my-orders',
     name: 'MyOrders',
     component: () => import('../components/RecordsPage.vue'),
-    meta: { requiresAuth: true, requiresRegularUser: true }
+    meta: { requiresAuth: true, requiresNonAdmin: true }
   },
   {
     path: '/batch',
@@ -75,6 +75,12 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/chat-history',
+    name: 'ChatHistory',
+    component: () => import('../components/ChatHistoryPage.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
     path: '/embed-guide',
     name: 'EmbedGuide',
     component: () => import('../components/EmbedGuidePage.vue'),
@@ -109,6 +115,13 @@ router.beforeEach((to, from, next) => {
 
   if (to.meta.requiresRegularUser && hasToken) {
     if (!isRegularUserRoleSet(storedRoles)) {
+      next('/dashboard')
+      return
+    }
+  }
+
+  if (to.meta.requiresNonAdmin && hasToken) {
+    if (hasAdminRole(storedRoles)) {
       next('/dashboard')
       return
     }

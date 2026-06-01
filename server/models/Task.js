@@ -68,6 +68,13 @@ const Task = {
         for (const p of prods) if (!prodByType[p.target_type]) prodByType[p.target_type] = p
       }
 
+      const userIdSet = [...new Set(rows.map(r => r.user_id).filter(Boolean))]
+      const userMap = {}
+      if (userIdSet.length > 0) {
+        const users = await db('users').whereIn('id', userIdSet).select('id', 'username', 'nickname')
+        for (const u of users) userMap[u.id] = u
+      }
+
       for (const row of rows) {
         const t = typeMap.find(x => x.batch_id === row.id)
         const a = amountMap.find(x => x.batch_id === row.id)
@@ -80,6 +87,9 @@ const Task = {
         row.total_paid = a?.total_paid || 0
         row.total_completed = Number(p?.total_completed) || 0
         row.total_ordered = Number(p?.total_ordered) || 0
+        const u = userMap[row.user_id]
+        row.username = u?.username || null
+        row.nickname = u?.nickname || null
       }
     }
 

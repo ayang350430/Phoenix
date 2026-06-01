@@ -1,5 +1,6 @@
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessageBox, ElMessage, ElPagination } from 'element-plus'
 import { getUserOrderStatusDisplay } from '../utils/orderStatusDisplay.js'
 
@@ -16,10 +17,12 @@ const vClickOutside = {
   }
 }
 
+const route = useRoute()
 const ws = inject('workspace')
-const { getToken, refreshKey, isAdmin, isAgent, fetchBalance } = ws
-const canExportProblemOrders = computed(() => isAdmin.value || isAgent.value)
-const canViewOrderStatus = computed(() => isAdmin.value || isAgent.value)
+const { getToken, refreshKey, isAdmin, isAgent, fetchBalance, currentUser } = ws
+const isMyOrdersPage = computed(() => route.path === '/my-orders')
+const canExportProblemOrders = computed(() => (isAdmin.value || isAgent.value) && !isMyOrdersPage.value)
+const canViewOrderStatus = computed(() => (isAdmin.value || isAgent.value) && !isMyOrdersPage.value)
 
 // ========== 统计 ==========
 const batchTotal = ref(0)
@@ -253,8 +256,16 @@ const hasPendingRefund = ref(false)
 const pendingOrderIds = ref([])
 const refundingOrderId = ref(null)
 
+// 当前抽屉批次是否属于自己（代理查看下级订单时不能退款，管理员不受限）
+const isOwnBatch = computed(() => {
+  if (!drawerBatch.value || !currentUser.value) return true
+  if (isAdmin.value) return true
+  return drawerBatch.value.user_id === currentUser.value.id
+})
+
 // 批次内是否还有可退款的订单
 const canBatchRefund = computed(() => {
+  if (!isOwnBatch.value) return false
   if (!drawerOrders.value.length) return false
   return drawerOrders.value.some(o => !['refunded', 'cancelled', 'completed'].includes(o.order_status))
 })
@@ -965,6 +976,7 @@ onUnmounted(() => {
                   <span class="tag type-tag">{{ pn(batch) }}</span>
                   <span class="tag" :style="batch.data_source === 'pgy' ? 'color:#ee4d7a;background:#fff0f5;border-color:#f8d8e4' : 'color:#18a058;background:#eafaf1;border-color:#b7ebc9'">{{ batch.data_source === 'pgy' ? '蒲公英' : '实时' }}</span>
                   <span class="tag method-tag">确认提交</span>
+                  <span v-if="isMyOrdersPage && isAgent && batch.nickname" class="tag user-tag">{{ batch.nickname || batch.username }}</span>
                   <span v-if="canViewOrderStatus && batch.has_upstream === false" class="tag no-upstream-tag">无上游</span>
                 </div>
                 <div class="batch-time">
@@ -1241,9 +1253,9 @@ onUnmounted(() => {
                   <div class="oc-head">
                     <span class="oc-idx">#{{ idx + 1 }}</span>
                     <span class="oc-no mono">{{ order.order_no }}</span>
-                    <span v-if="pendingOrderIds.includes(order.id)" class="oc-refund-pending">退款申请中</span>
+                    <span v-if="isOwnBatch && pendingOrderIds.includes(order.id)" class="oc-refund-pending">退款申请中</span>
                     <button
-                      v-else-if="!['completed','refunded','cancelled'].includes(order.order_status)"
+                      v-else-if="isOwnBatch && !['completed','refunded','cancelled'].includes(order.order_status)"
                       class="oc-refund-btn"
                       :disabled="refundingOrderId === order.id"
                       @click.stop="requestOrderRefund(order)"
@@ -2089,6 +2101,7 @@ onUnmounted(() => {
   --prog-color: #8b7bf7;
 }
 
+.batch-row .batch-info .batch-head .user-tag,
 .sup-batch-row .batch-info .batch-head .user-tag {
   background: #f4f0ff;
   color: #8b7bf7;

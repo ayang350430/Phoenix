@@ -94,8 +94,12 @@ function fallbackCopy(text) {
 // ========== 导航 ==========
 const baseNavs = ['首页', '批量下单', '查询订单']
 const navs = computed(() => {
-  if (isAdmin.value) return ['首页', '批量下单', '记录中心', '查询订单', '退款申请', '在线客服', '客服配置', '嵌入指南', '权限管理']
-  if (isAgent.value) return [...baseNavs, '商品管理']
+  if (isAdmin.value) return ['首页', '批量下单', '记录中心', '查询订单', '退款申请', '在线客服', '聊天记录', '客服配置', '嵌入指南', '权限管理']
+  if (isAgent.value) {
+    const items = [...baseNavs, '下单记录', '商品管理']
+    if (isSupport.value) items.push('在线客服')
+    return items
+  }
   if (isSupport.value) return ['在线客服']
   return ['首页', '批量下单', '下单记录', '查询订单']
 })
@@ -108,6 +112,7 @@ else if (route.path === '/records') activeNav.value = '记录中心'
 else if (route.path === '/my-orders') activeNav.value = '下单记录'
 else if (route.path === '/products') activeNav.value = '商品管理'
 else if (route.path === '/support') activeNav.value = '在线客服'
+else if (route.path === '/chat-history') activeNav.value = '聊天记录'
 else if (route.path === '/cs-config') activeNav.value = '客服配置'
 else if (route.path === '/refund') activeNav.value = '退款申请'
 else if (route.path === '/order-lookup') activeNav.value = '查询订单'
@@ -121,6 +126,7 @@ const displayActiveNav = computed(() => {
   if (route.path === '/my-orders') return '下单记录'
   if (route.path === '/products') return '商品管理'
   if (route.path === '/support') return '在线客服'
+  if (route.path === '/chat-history') return '聊天记录'
   if (route.path === '/cs-config') return '客服配置'
   if (route.path === '/refund') return '退款申请'
   if (route.path === '/order-lookup') return '查询订单'
@@ -135,6 +141,7 @@ function handleNav(nav) {
   if (nav === '记录中心') { router.push('/records'); return }
   if (nav === '下单记录') { router.push('/my-orders'); return }
   if (nav === '在线客服') { router.push('/support'); return }
+  if (nav === '聊天记录') { router.push('/chat-history'); return }
   if (nav === '客服配置') { router.push('/cs-config'); return }
   if (nav === '退款申请') { router.push('/refund'); return }
   if (nav === '查询订单') { router.push('/order-lookup'); return }
@@ -576,6 +583,12 @@ provide('workspace', {
                 <svg v-else-if="nav === '在线客服'" width="18" height="18" viewBox="0 0 24 24" fill="none"
                   stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                </svg>
+                <svg v-else-if="nav === '聊天记录'" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                  <line x1="9" y1="9" x2="15" y2="9" />
+                  <line x1="9" y1="13" x2="13" y2="13" />
                 </svg>
                 <svg v-else-if="nav === '客服配置'" width="18" height="18" viewBox="0 0 24 24" fill="none"
                   stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
