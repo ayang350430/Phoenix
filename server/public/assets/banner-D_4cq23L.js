@@ -1,0 +1,1 @@
+var e=`/assets/banner-CyYxZCLC.png`;export{e as t};

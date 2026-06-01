@@ -5,6 +5,7 @@ const { getToken } = inject('workspace')
 const widgetUrl = ref('')
 const copied = ref('')
 const embedToken = ref('')
+const tokenError = ref('')
 
 onMounted(async () => {
   try {
@@ -12,8 +13,14 @@ onMounted(async () => {
       headers: { Authorization: `Bearer ${getToken()}` }
     })
     const data = await res.json()
-    if (data.code === 0) embedToken.value = data.data.token
-  } catch { /* ignore */ }
+    if (data.code === 0 && data.data?.token) {
+      embedToken.value = data.data.token
+    } else {
+      tokenError.value = data.message || '获取 Token 失败'
+    }
+  } catch (err) {
+    tokenError.value = '网络错误: ' + err.message
+  }
 })
 
 function detectUrl() {
@@ -45,10 +52,29 @@ function getEmbedCodeLeft() {
 }
 
 function copyCode(text, key) {
-  navigator.clipboard.writeText(text).then(() => {
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => {
+      copied.value = key
+      setTimeout(() => { copied.value = '' }, 2000)
+    }).catch(() => fallbackCopy(text, key))
+  } else {
+    fallbackCopy(text, key)
+  }
+}
+
+function fallbackCopy(text, key) {
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.position = 'fixed'
+  ta.style.left = '-9999px'
+  document.body.appendChild(ta)
+  ta.select()
+  try {
+    document.execCommand('copy')
     copied.value = key
     setTimeout(() => { copied.value = '' }, 2000)
-  })
+  } catch { /* ignore */ }
+  document.body.removeChild(ta)
 }
 </script>
 
@@ -85,6 +111,20 @@ function copyCode(text, key) {
         <div class="eg-url-row">
           <input v-model="widgetUrl" type="text" placeholder="例如 https://cs.yourdomain.com" @input="detectUrl" />
         </div>
+      </div>
+
+      <!-- 你的 Token -->
+      <div class="eg-section">
+        <label class="eg-label">你的 Data Token</label>
+        <p class="eg-hint">每个账号唯一，嵌入代码中的 data-token 值</p>
+        <div v-if="embedToken" class="eg-token-box">
+          <code class="eg-token-value">{{ embedToken }}</code>
+          <button class="eg-token-copy" :class="{ ok: copied === 'token' }" @click="copyCode(embedToken, 'token')">
+            {{ copied === 'token' ? '已复制' : '复制' }}
+          </button>
+        </div>
+        <div v-else-if="tokenError" class="eg-token-error">{{ tokenError }}</div>
+        <div v-else class="eg-token-loading">加载中...</div>
       </div>
 
       <!-- 基础嵌入 -->
@@ -294,6 +334,29 @@ function copyCode(text, key) {
   border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.08);
   background: #fff;
 }
+
+/* Token 展示 */
+.eg-token-box {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 16px; border-radius: 10px;
+  background: #f0f4ff; border: 1.5px solid #c7d7fe;
+}
+.eg-token-value {
+  flex: 1; font-family: 'SF Mono', Consolas, monospace;
+  font-size: 15px; font-weight: 700; color: #2563eb;
+  word-break: break-all; user-select: all;
+}
+.eg-token-copy {
+  padding: 6px 16px; border-radius: 8px; border: none;
+  font-size: 13px; font-weight: 700; cursor: pointer;
+  background: linear-gradient(135deg, #2563eb, #7c3aed); color: #fff;
+  transition: filter .15s, transform .15s;
+}
+.eg-token-copy:hover { filter: brightness(1.08); }
+.eg-token-copy:active { transform: scale(0.97); }
+.eg-token-copy.ok { background: linear-gradient(135deg, #42c978, #2fb86e); }
+.eg-token-error { color: #ef4444; font-size: 13px; padding: 8px 0; }
+.eg-token-loading { color: #94a3b8; font-size: 13px; padding: 8px 0; }
 
 /* 代码块 */
 .eg-code-block {

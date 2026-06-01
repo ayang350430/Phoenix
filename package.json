@@ -9,6 +9,9 @@
     "preview": "vite preview",
     "server": "node server/index.js",
     "server:dev": "nodemon server/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "migrate": "npx knex migrate:latest --knexfile server/knexfile.js",
     "seed": "npx knex seed:run --knexfile server/knexfile.js"
   },
@@ -16,6 +19,7 @@
     "axios": "^1.16.1",
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.10.0",
+    "compression": "^1.8.1",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "echarts": "^6.1.0",
@@ -31,7 +35,11 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.6",
+    "@vitest/coverage-v8": "^4.1.7",
     "nodemon": "^3.1.14",
-    "vite": "^8.0.12"
+    "puppeteer-core": "^25.1.0",
+    "supertest": "^7.2.2",
+    "vite": "^8.0.12",
+    "vitest": "^4.1.7"
   }
 }

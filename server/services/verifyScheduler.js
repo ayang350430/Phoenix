@@ -1,6 +1,7 @@
 import crypto from 'crypto'
 import db from '../db.js'
 import { fetchNoteViewCount, fetchNoteLikeCount } from './noteApi.js'
+import { canTriggerSnapshotSupplement } from './supplementPolicy.js'
 
 const POLL_INTERVAL = 60_000
 const DELAY_MINUTES = 5
@@ -18,6 +19,8 @@ async function findPendingOrders() {
     .whereNull('last_verified_at')
     .where('updated_at', '<=', cutoff)
     .whereNotNull('note_id')
+    .whereNotNull('external_task_id')
+    .where('external_status', 'completed')
     .orderBy('updated_at', 'asc')
     .limit(BATCH_LIMIT)
 }
@@ -32,11 +35,13 @@ function calcShortage(order, verifiedCount) {
 }
 
 async function fetchVerifiedCount(order) {
+  // 数据源：realtime=实时(/realtime)，pgy=蒲公英(/pgy)
+  const dataSource = order.data_source || 'realtime'
   if (order.target_type === 'like') {
-    const { like_count, payload } = await fetchNoteLikeCount(order.note_id)
+    const { like_count, payload } = await fetchNoteLikeCount(order.note_id, dataSource)
     return { count: like_count, payload }
   }
-  const { view_count, payload } = await fetchNoteViewCount(order.note_id)
+  const { view_count, payload } = await fetchNoteViewCount(order.note_id, dataSource)
   return { count: view_count, payload }
 }
 
@@ -55,12 +60,12 @@ async function saveSnapshot(order, count, payload) {
   await db('orders').where({ id: order.id }).update(updateData)
 }
 
-async function autoRequestSupplement(order, baseLine, verifiedCount, shortage) {
+async function autoRequestSupplement(order, shortageInfo) {
   const existing = await db('order_replenishment_records')
     .where({ order_id: order.id })
     .whereIn('status', ['pending', 'agent_approved', 'processing'])
     .first()
-  if (existing) return
+  if (existing) return false
 
   const ts = Date.now().toString(36).toUpperCase()
   const hex = crypto.randomBytes(3).toString('hex').toUpperCase()
@@ -77,34 +82,32 @@ async function autoRequestSupplement(order, baseLine, verifiedCount, shortage) {
     note_url: order.note_url,
     original_external_task_id: order.external_task_id || null,
     ordered_quantity: order.ordered_quantity,
-    actual_quantity: Math.max(0, verifiedCount - baseLine),
-    shortage_quantity: shortage,
-    snapshot_before_count: baseLine,
-    snapshot_after_count: verifiedCount,
+    actual_quantity: shortageInfo.actualGain,
+    shortage_quantity: shortageInfo.shortage,
+    snapshot_before_count: shortageInfo.baseLine,
+    snapshot_after_count: shortageInfo.actualCount,
     status: 'pending',
-    reason_message: '系统自动验证未达标',
+    reason_message: '上游完成后验证快照未达标',
     requested_at: now,
     created_at: now,
     updated_at: now
   })
 
-  console.log(`[verify-scheduler] ${order.order_no} 自动提交补单申请，差额=${shortage}`)
+  return true
 }
 
 async function verifyOne(order) {
   let count = null
   let payload = null
 
-  // 第一次采集
   try {
     const result = await fetchVerifiedCount(order)
     count = result.count
     payload = result.payload
   } catch (err) {
-    console.warn(`[verify-scheduler] ${order.order_no} 第1次采集失败: ${err.message}`)
+    console.warn(`[verify-scheduler] ${order.order_no} first snapshot fetch failed: ${err.message}`)
   }
 
-  // 失败则 2 分钟后重试
   if (count == null) {
     await new Promise(r => setTimeout(r, RETRY_DELAY))
     try {
@@ -112,7 +115,7 @@ async function verifyOne(order) {
       count = result.count
       payload = result.payload
     } catch (err) {
-      console.error(`[verify-scheduler] ${order.order_no} 第2次采集仍失败: ${err.message}`)
+      console.error(`[verify-scheduler] ${order.order_no} second snapshot fetch failed: ${err.message}`)
       return
     }
   }
@@ -122,14 +125,29 @@ async function verifyOne(order) {
   await saveSnapshot(order, count, payload)
 
   const { baseLine, gain, shortage } = calcShortage(order, count)
+  const completedQty = Math.min(gain, order.ordered_quantity)
+  await db('orders').where({ id: order.id }).update({
+    completed_quantity: completedQty,
+    updated_at: new Date()
+  })
 
   console.log(
     `[verify-scheduler] ${order.order_no} | ${order.target_type} | ` +
-    `base=${baseLine} verified=${count} gain=${gain} shortage=${shortage}`
+    `base=${baseLine} verified=${count} gain=${gain} completed=${completedQty} shortage=${shortage}`
   )
 
   if (shortage > 0) {
-    await autoRequestSupplement(order, baseLine, count, shortage)
+    const supplementDecision = canTriggerSnapshotSupplement({
+      ...order,
+      snapshot_verified_like_count: order.target_type === 'like' ? count : order.snapshot_verified_like_count,
+      snapshot_verified_read_count: order.target_type === 'like' ? order.snapshot_verified_read_count : count
+    }, { trigger: 'upstream_completed_verify' })
+    if (supplementDecision.allowed) {
+      const created = await autoRequestSupplement(order, supplementDecision)
+      if (created) {
+        console.log(`[verify-scheduler] ${order.order_no} auto supplement requested, shortage=${supplementDecision.shortage}`)
+      }
+    }
   }
 }
 
@@ -140,7 +158,7 @@ async function tick() {
     const orders = await findPendingOrders()
     if (orders.length === 0) return
 
-    console.log(`[verify-scheduler] 发现 ${orders.length} 条待验证订单`)
+    console.log(`[verify-scheduler] found ${orders.length} orders to verify`)
 
     for (const order of orders) {
       await verifyOne(order)
@@ -153,7 +171,7 @@ async function tick() {
 }
 
 export function startVerifyScheduler() {
-  console.log(`[verify-scheduler] 已启动 | 轮询间隔=${POLL_INTERVAL / 1000}s | 完成后延迟=${DELAY_MINUTES}min`)
+  console.log(`[verify-scheduler] started | poll=${POLL_INTERVAL / 1000}s | delay=${DELAY_MINUTES}min`)
   setTimeout(tick, 10_000)
   setInterval(tick, POLL_INTERVAL)
 }

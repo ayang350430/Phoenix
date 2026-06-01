@@ -87,10 +87,19 @@ export async function ensureSchema() {
       t.string('color', 30).nullable().defaultTo('')
       t.integer('sort_order').notNullable().defaultTo(0)
       t.string('api_endpoint', 255).nullable()
+      t.string('data_source', 20).notNullable().defaultTo('realtime').comment('快照数据源 realtime=实时 pgy=蒲公英')
       t.timestamp('created_at').defaultTo(db.fn.now())
       t.timestamp('updated_at').defaultTo(db.fn.now())
     })
     console.log('  [SCHEMA] Created table: products')
+  }
+
+  // products.data_source（已有表补列）
+  if ((await db.schema.hasTable('products')) && !(await db.schema.hasColumn('products', 'data_source'))) {
+    await db.schema.alterTable('products', t => {
+      t.string('data_source', 20).notNullable().defaultTo('realtime').comment('快照数据源 realtime=实时 pgy=蒲公英')
+    })
+    console.log('  [SCHEMA] Added column: products.data_source')
   }
 
   // 7. order_batches
@@ -101,6 +110,7 @@ export async function ensureSchema() {
       t.string('batch_no', 50).notNullable()
       t.integer('user_id').unsigned().notNullable()
       t.string('source_type', 30).nullable()
+      t.string('data_source', 20).nullable().defaultTo('realtime').comment('快照数据源 realtime=实时 pgy=蒲公英')
       t.string('submit_mode', 30).nullable()
       t.text('raw_content', 'longtext').nullable()
       t.string('status', 20).notNullable().defaultTo('pending')
@@ -119,6 +129,14 @@ export async function ensureSchema() {
     console.log('  [SCHEMA] Created table: order_batches')
   }
 
+  // order_batches.data_source（已有表补列）
+  if ((await db.schema.hasTable('order_batches')) && !(await db.schema.hasColumn('order_batches', 'data_source'))) {
+    await db.schema.alterTable('order_batches', t => {
+      t.string('data_source', 20).nullable().defaultTo('realtime').comment('快照数据源 realtime=实时 pgy=蒲公英')
+    })
+    console.log('  [SCHEMA] Added column: order_batches.data_source')
+  }
+
   // 8. orders
   if (!(await db.schema.hasTable('orders'))) {
     await db.schema.createTable('orders', t => {
@@ -132,6 +150,7 @@ export async function ensureSchema() {
       t.string('note_url', 500).nullable()
       t.string('title', 500).nullable()
       t.string('target_type', 30).notNullable()
+      t.string('data_source', 20).nullable().defaultTo('realtime').comment('快照数据源 realtime=实时 pgy=蒲公英')
       t.string('author_id', 255).nullable()
       t.string('author_name', 255).nullable()
       t.string('avatar_url', 500).nullable()
@@ -150,7 +169,11 @@ export async function ensureSchema() {
       t.text('snapshot_current_like_payload', 'longtext').nullable()
       t.integer('snapshot_verified_read_count').unsigned().nullable()
       t.integer('snapshot_verified_like_count').unsigned().nullable()
+      t.text('snapshot_verified_read_payload', 'longtext').nullable()
+      t.text('snapshot_verified_like_payload', 'longtext').nullable()
       t.timestamp('last_verified_at').nullable()
+      t.timestamp('last_dispatch_at').nullable()
+      t.string('reason_message', 500).nullable()
       t.timestamp('created_at').defaultTo(db.fn.now())
       t.timestamp('updated_at').defaultTo(db.fn.now())
       t.index('batch_id')
@@ -158,6 +181,19 @@ export async function ensureSchema() {
       t.index('order_status')
     })
     console.log('  [SCHEMA] Created table: orders')
+  }
+
+  for (const col of [
+    { name: 'last_dispatch_at', add: t => t.timestamp('last_dispatch_at').nullable() },
+    { name: 'reason_message', add: t => t.string('reason_message', 500).nullable() },
+    { name: 'snapshot_verified_read_payload', add: t => t.text('snapshot_verified_read_payload', 'longtext').nullable() },
+    { name: 'snapshot_verified_like_payload', add: t => t.text('snapshot_verified_like_payload', 'longtext').nullable() },
+    { name: 'data_source', add: t => t.string('data_source', 20).nullable().defaultTo('realtime') },
+  ]) {
+    if (!(await db.schema.hasColumn('orders', col.name))) {
+      await db.schema.alterTable('orders', col.add)
+      console.log(`  [SCHEMA] Added column: orders.${col.name}`)
+    }
   }
 
   // 9. balance_accounts
@@ -320,11 +356,25 @@ export async function ensureSchema() {
       t.integer('snapshot_after_count').unsigned().nullable()
       t.string('status', 20).defaultTo('pending')
       t.text('reason_message').nullable()
+      t.integer('reviewed_by').unsigned().nullable()
+      t.text('review_remark').nullable()
+      t.timestamp('reviewed_at').nullable()
       t.timestamp('requested_at').nullable()
       t.timestamp('created_at').defaultTo(db.fn.now())
       t.timestamp('updated_at').defaultTo(db.fn.now())
     })
     console.log('  [SCHEMA] Created table: order_replenishment_records')
+  }
+
+  // 17.1 补字段：order_replenishment_records 审核字段
+  {
+    const cols = await db.raw("SHOW COLUMNS FROM order_replenishment_records LIKE 'reviewed_at'")
+    if (!cols[0].length) {
+      await db.raw("ALTER TABLE order_replenishment_records ADD COLUMN reviewed_by INT UNSIGNED NULL AFTER status")
+      await db.raw("ALTER TABLE order_replenishment_records ADD COLUMN review_remark TEXT NULL AFTER reviewed_by")
+      await db.raw("ALTER TABLE order_replenishment_records ADD COLUMN reviewed_at TIMESTAMP NULL AFTER review_remark")
+      console.log('  [SCHEMA] Added reviewed_by/review_remark/reviewed_at to order_replenishment_records')
+    }
   }
 
   // 18. recharge_orders
@@ -337,12 +387,28 @@ export async function ensureSchema() {
       t.decimal('amount', 14, 4).notNullable()
       t.string('currency', 10).notNullable().defaultTo('CNY')
       t.string('status', 20).defaultTo('pending')
+      t.string('pay_type', 20).nullable()
       t.string('payment_url', 500).nullable()
       t.timestamp('expired_at').nullable()
+      t.timestamp('paid_at').nullable()
       t.timestamp('created_at').defaultTo(db.fn.now())
       t.timestamp('updated_at').nullable()
     })
     console.log('  [SCHEMA] Created table: recharge_orders')
+  }
+
+  if (!(await db.schema.hasColumn('recharge_orders', 'paid_at'))) {
+    await db.schema.alterTable('recharge_orders', t => {
+      t.timestamp('paid_at').nullable()
+    })
+    console.log('  [SCHEMA] Added column: recharge_orders.paid_at')
+  }
+
+  if (!(await db.schema.hasColumn('recharge_orders', 'pay_type'))) {
+    await db.schema.alterTable('recharge_orders', t => {
+      t.string('pay_type', 20).nullable()
+    })
+    console.log('  [SCHEMA] Added column: recharge_orders.pay_type')
   }
 
   // 19. batch_link_check_records

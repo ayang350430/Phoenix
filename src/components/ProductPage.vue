@@ -2,7 +2,7 @@
 import { inject, onMounted, ref, computed } from 'vue'
 
 const ws = inject('workspace')
-const { getToken, isAdmin, isAgent } = ws
+const { getToken, isAdmin, isAgent, balance, fetchBalance } = ws
 
 // ============================== 共用 ==============================
 const builtinTypes = [
@@ -148,8 +148,20 @@ const selectedUserId = ref(null)
 const userPrices = ref([])            // 选中用户的各商品定制价
 const editUserPrices = ref({})        // { [productId]: input value }
 const savingUserPrice = ref({})
+const userSearchQuery = ref('')
 
 const selectedUser = computed(() => agentUsers.value.find(u => u.id === selectedUserId.value))
+
+const filteredAgentUsers = computed(() => {
+  const q = userSearchQuery.value.trim().toLowerCase()
+  if (!q) return agentUsers.value
+  return agentUsers.value.filter(u =>
+    (u.username || '').toLowerCase().includes(q) ||
+    (u.nickname || '').toLowerCase().includes(q) ||
+    (u.real_name || '').toLowerCase().includes(q) ||
+    String(u.id).includes(q)
+  )
+})
 
 async function fetchAgentPrices() {
   agentLoading.value = true
@@ -249,6 +261,9 @@ async function loadUserPrices() {
 
 function selectUser(uid) {
   selectedUserId.value = uid
+  transferAmount.value = ''
+  transferError.value = ''
+  transferMsg.value = ''
   loadUserPrices()
 }
 
@@ -299,6 +314,40 @@ async function resetUserPrice(productId) {
 function userPriceOf(productId) {
   const up = userPrices.value.find(r => r.product_id === productId)
   return up ? parseFloat(up.sell_price) : null
+}
+
+// ============================== 余额划款 ==============================
+const transferAmount = ref('')
+const transferring = ref(false)
+const transferError = ref('')
+const transferMsg = ref('')
+
+async function doTransfer() {
+  transferError.value = ''
+  transferMsg.value = ''
+  const amount = Math.round((parseFloat(transferAmount.value) || 0) * 100) / 100
+  if (!selectedUserId.value) { transferError.value = '请先选择下级用户'; return }
+  if ((balance.value || 0) <= 0) { transferError.value = '余额为 0，无法划款'; return }
+  if (!amount || amount <= 0) { transferError.value = '请输入有效的划款金额'; return }
+  if (amount > balance.value) { transferError.value = `划款金额不能超过可用余额 ¥${balance.value.toFixed(2)}`; return }
+
+  transferring.value = true
+  try {
+    const res = await fetch('/api/agent/transfer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
+      body: JSON.stringify({ user_id: selectedUserId.value, amount })
+    })
+    const data = await res.json()
+    if (data.code === 0) {
+      transferMsg.value = data.message || '划款成功'
+      transferAmount.value = ''
+      if (fetchBalance) await fetchBalance()
+    } else {
+      transferError.value = data.message || '划款失败'
+    }
+  } catch { transferError.value = '网络错误' }
+  finally { transferring.value = false }
 }
 
 // ============================== 生命周期 ==============================
@@ -537,11 +586,22 @@ onMounted(() => {
       </div>
 
       <template v-else>
-        <div class="user-select-row">
-          <label>选择用户：</label>
-          <div class="user-chips">
+        <div class="user-picker-card">
+          <div class="user-picker-header">
+            <div class="user-picker-title">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input
+                v-model="userSearchQuery"
+                type="text"
+                class="user-search-input"
+                placeholder="搜索用户名 / 昵称 / ID..."
+              />
+            </div>
+            <span class="user-search-count">{{ filteredAgentUsers.length }} / {{ agentUsers.length }} 人</span>
+          </div>
+          <div class="user-chips-area">
             <button
-              v-for="u in agentUsers" :key="u.id"
+              v-for="u in filteredAgentUsers" :key="u.id"
               type="button"
               :class="['user-chip', { active: selectedUserId === u.id }]"
               @click="selectUser(u.id)"
@@ -549,7 +609,49 @@ onMounted(() => {
               <span class="chip-avatar">{{ (u.nickname || u.username || '?')[0] }}</span>
               {{ u.nickname || u.username }}
             </button>
+            <div v-if="filteredAgentUsers.length === 0 && userSearchQuery" class="user-search-empty">
+              <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#c8cfd8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+              <span>未找到匹配的用户</span>
+            </div>
           </div>
+        </div>
+
+        <!-- 余额划款 -->
+        <div v-if="selectedUserId" class="transfer-card">
+          <div class="transfer-head">
+            <div class="transfer-title">
+              <h3>余额划款给 {{ selectedUser?.nickname || selectedUser?.username }}</h3>
+              <p>从你的余额划入该下级，金额不能超过可用余额；余额为 0 时不可划款</p>
+            </div>
+            <div class="transfer-balance">
+              <span>我的可用余额</span>
+              <strong>¥{{ (balance || 0).toFixed(2) }}</strong>
+            </div>
+          </div>
+          <div class="transfer-form">
+            <div class="price-input-group" :class="{ 'has-error': transferError }">
+              <span class="price-prefix">¥</span>
+              <input
+                v-model="transferAmount"
+                type="number"
+                min="0"
+                step="0.01"
+                :max="balance"
+                placeholder="划款金额"
+                class="price-input"
+                :disabled="(balance || 0) <= 0"
+                @input="transferError = ''"
+              />
+            </div>
+            <button
+              class="btn-transfer"
+              :disabled="transferring || (balance || 0) <= 0"
+              @click="doTransfer"
+            >{{ transferring ? '划款中...' : '确认划款' }}</button>
+          </div>
+          <div v-if="transferError" class="price-error">{{ transferError }}</div>
+          <div v-else-if="transferMsg" class="transfer-success">{{ transferMsg }}</div>
+          <div v-else-if="(balance || 0) <= 0" class="transfer-hint">当前余额为 0，无法划款。可通过下级下单分润或充值获得余额。</div>
         </div>
 
         <div v-if="selectedUserId" class="price-table-wrap">
@@ -813,29 +915,98 @@ onMounted(() => {
 .btn-sm.reset:hover { background: #edf1f6; color: #425066; }
 .btn-sm.reset:disabled { opacity: .5; pointer-events: none; }
 
-/* ========== 用户选择 ========== */
-.user-select-row {
-  display: flex; align-items: center; gap: 14px; margin-bottom: 18px; flex-wrap: wrap;
+/* ========== 余额划款 ========== */
+.transfer-card {
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  border: 1px solid #e6ecf5;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #fbfcff, #f7faff);
 }
-.user-select-row > label { font-size: 14px; font-weight: 700; color: #425066; white-space: nowrap; }
-.user-chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.transfer-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px;
+  margin-bottom: 14px;
+}
+.transfer-title h3 { font-size: 16px; font-weight: 800; color: #152033; margin: 0 0 4px; }
+.transfer-title p { font-size: 12px; color: #8a95a8; margin: 0; line-height: 1.6; }
+.transfer-balance { flex-shrink: 0; text-align: right; }
+.transfer-balance span { display: block; font-size: 12px; color: #8a95a8; }
+.transfer-balance strong { display: block; margin-top: 3px; font-size: 22px; color: #ee4d7a; font-variant-numeric: tabular-nums; }
+.transfer-form { display: flex; gap: 10px; align-items: stretch; }
+.transfer-form .price-input-group { flex: 1; }
+.btn-transfer {
+  flex-shrink: 0; min-width: 110px; padding: 0 22px;
+  border-radius: 8px; border: none; cursor: pointer;
+  color: #fff; font-size: 14px; font-weight: 800;
+  background: linear-gradient(135deg, #8b7bf7, #5b8def);
+  box-shadow: 0 8px 18px rgba(91,141,239,.24);
+  transition: transform 200ms ease, box-shadow 200ms ease, filter 200ms ease;
+}
+.btn-transfer:hover:not(:disabled) { transform: translateY(-1px); filter: saturate(1.08); }
+.btn-transfer:active:not(:disabled) { transform: scale(.97); }
+.btn-transfer:disabled { opacity: .5; cursor: not-allowed; }
+.transfer-success { margin-top: 8px; font-size: 13px; font-weight: 700; color: #18b66e; }
+.transfer-hint { margin-top: 8px; font-size: 12px; color: #b96b00; }
+
+/* ========== 用户选择卡片 ========== */
+.user-picker-card {
+  background: #fff; border-radius: 16px; border: 1px solid #edf1f6;
+  box-shadow: 0 4px 18px rgba(21,32,51,.05); margin-bottom: 20px;
+  overflow: hidden;
+}
+.user-picker-header {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 20px;
+  background: linear-gradient(135deg, rgba(139,123,247,.06), rgba(91,141,239,.06));
+  border-bottom: 1px solid #edf1f6;
+}
+.user-picker-title {
+  flex: 1; display: flex; align-items: center; gap: 8px;
+  color: #9aa5b5;
+}
+.user-search-input {
+  flex: 1; border: none; background: transparent; outline: none;
+  font-size: 14px; color: #152033; font-weight: 500;
+}
+.user-search-input::placeholder { color: #c0c8d4; font-weight: 400; }
+.user-search-count {
+  font-size: 12px; color: #9aa5b5; font-weight: 600;
+  background: #f4f7fb; padding: 4px 12px; border-radius: 20px;
+  white-space: nowrap; flex-shrink: 0;
+}
+.user-chips-area {
+  display: flex; gap: 10px; flex-wrap: wrap;
+  padding: 16px 20px;
+  max-height: 220px; overflow-y: auto;
+}
 .user-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 7px 16px 7px 8px; border-radius: 10px;
-  border: 1.5px solid #e3e8f0; background: #fff;
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 8px 16px 8px 8px; border-radius: 12px;
+  border: 1.5px solid #edf1f6; background: #f8faff;
   font-size: 13px; font-weight: 600; color: #647184;
-  cursor: pointer; transition: all 180ms ease;
+  cursor: pointer; transition: all 200ms cubic-bezier(.22,1,.36,1);
 }
-.user-chip:hover { border-color: #c4bbf7; background: #f8f6ff; color: #8b7bf7; }
+.user-chip:hover {
+  border-color: #c4bbf7; background: #f3f0ff; color: #7c6ad6;
+  transform: translateY(-1px); box-shadow: 0 4px 12px rgba(139,123,247,.1);
+}
 .user-chip.active {
-  border-color: #8b7bf7; background: #f3f0ff; color: #8b7bf7;
-  box-shadow: 0 4px 12px rgba(139,123,247,.12);
+  border-color: #8b7bf7; background: linear-gradient(135deg, #f3f0ff, #eef0ff); color: #7c6ad6;
+  box-shadow: 0 4px 14px rgba(139,123,247,.15);
 }
 .chip-avatar {
-  width: 24px; height: 24px; border-radius: 7px;
+  width: 26px; height: 26px; border-radius: 8px;
   background: linear-gradient(135deg, #8b7bf7, #5b8def);
   color: #fff; display: grid; place-items: center;
   font-size: 11px; font-weight: 900;
+}
+.user-chip.active .chip-avatar {
+  box-shadow: 0 2px 8px rgba(139,123,247,.3);
+}
+.user-search-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  width: 100%; padding: 24px 0;
+  color: #c0c8d4; font-size: 13px;
 }
 
 /* ========== 弹窗 ========== */
@@ -964,6 +1135,8 @@ onMounted(() => {
   .price-table { min-width: 620px; }
   .price-table th, .price-table td { padding: 10px 12px; font-size: 13px; }
   .price-input { width: 80px; }
-  .user-chips { gap: 6px; }
+  .user-picker-header { flex-wrap: wrap; padding: 12px 14px; }
+  .user-chips-area { padding: 12px 14px; gap: 8px; max-height: 180px; }
+  .user-chip { padding: 6px 12px 6px 6px; font-size: 12px; }
 }
 </style>

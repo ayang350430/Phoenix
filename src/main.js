@@ -1,7 +1,9 @@
 import { createApp } from 'vue'
-import ElementPlus, { ElMessageBox } from 'element-plus'
-import zhCn from 'element-plus/dist/locale/zh-cn.mjs'
-import 'element-plus/dist/index.css'
+import { ElMessageBox } from 'element-plus'
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
+import 'element-plus/es/components/notification/style/css'
+import 'element-plus/es/components/pagination/style/css'
 import './style.css'
 import App from './App.vue'
 import router from './router'
@@ -22,7 +24,7 @@ window.fetch = async function (...args) {
           confirmButtonText: '重新登录',
           type: 'warning',
           callback: () => {
-            kickHandled = false  // 重置标记，允许下次登录后再次触发
+            kickHandled = false
             window.location.href = '/login'
           }
         })
@@ -32,4 +34,4 @@ window.fetch = async function (...args) {
   return res
 }
 
-createApp(App).use(ElementPlus, { locale: zhCn }).use(router).mount('#app')
+createApp(App).use(router).mount('#app')

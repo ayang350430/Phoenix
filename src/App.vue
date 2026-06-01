@@ -13,6 +13,7 @@ watch([locale, () => route.name], () => {
   const name = route.name
   document.title = name === 'Admin' ? '权限管理 - Phoenix'
     : name === 'Batch' ? '批量下单 - Phoenix'
+    : name === 'MyOrders' ? '下单记录 - Phoenix'
     : name === 'Dashboard' ? t('dashboard.siteTitle')
     : name === 'Login' ? t('login.siteTitle')
     : t('siteTitle')

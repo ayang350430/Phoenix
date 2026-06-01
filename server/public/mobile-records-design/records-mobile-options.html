@@ -1,0 +1,578 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>移动端记录页设计方向</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      background: #edf2f8;
+      color: #101827;
+    }
+    .page {
+      max-width: 1220px;
+      margin: 0 auto;
+      padding: 26px;
+    }
+    .intro {
+      margin-bottom: 22px;
+    }
+    .intro h1 {
+      margin: 0 0 8px;
+      font-size: 26px;
+    }
+    .intro p {
+      margin: 0;
+      color: #617086;
+      line-height: 1.7;
+    }
+    .options {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 22px;
+      align-items: start;
+    }
+    .option {
+      background: #fff;
+      border: 1px solid #dfe7f1;
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 16px 40px rgba(28, 39, 59, 0.08);
+    }
+    .option h2 {
+      margin: 0 0 6px;
+      font-size: 17px;
+    }
+    .option > p {
+      min-height: 42px;
+      margin: 0 0 14px;
+      color: #66758b;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .phone {
+      width: 360px;
+      max-width: 100%;
+      height: 760px;
+      margin: 0 auto;
+      border-radius: 26px;
+      overflow: hidden;
+      background: #f4f7fb;
+      border: 9px solid #18202f;
+      box-shadow: 0 18px 48px rgba(10, 17, 32, 0.2);
+    }
+    .status {
+      height: 26px;
+      padding: 0 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #121a2a;
+      color: #fff;
+      font-size: 11px;
+    }
+    .topbar {
+      height: 54px;
+      padding: 0 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: #fff;
+      border-bottom: 1px solid #e7edf5;
+    }
+    .logo {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, #7a8cff, #b267ff);
+    }
+    .brand {
+      font-size: 16px;
+      font-weight: 800;
+      margin-right: auto;
+    }
+    .menu, .avatar, .icon-btn {
+      display: grid;
+      place-items: center;
+      flex: 0 0 auto;
+    }
+    .menu, .icon-btn {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      background: #f1f4f8;
+      color: #425067;
+      font-weight: 800;
+    }
+    .avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      color: #fff;
+      background: linear-gradient(135deg, #7468e8, #5e7dec);
+      font-weight: 800;
+    }
+    .balance {
+      font-size: 12px;
+      color: #66758b;
+      white-space: nowrap;
+    }
+    .balance strong {
+      display: block;
+      color: #101827;
+      font-size: 13px;
+    }
+    .content {
+      height: calc(100% - 80px);
+      overflow: hidden;
+      padding: 12px;
+    }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .metric {
+      min-height: 78px;
+      padding: 13px;
+      border-radius: 12px;
+      background: #fff;
+      border: 1px solid #edf1f6;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 9px;
+      align-items: start;
+    }
+    .bubble {
+      width: 28px;
+      height: 28px;
+      border-radius: 10px;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-size: 14px;
+    }
+    .pink { background: #cf62ba; }
+    .green { background: #35c28b; }
+    .orange { background: #f7a233; }
+    .red { background: #f5637d; }
+    .blue { background: #5b83f1; }
+    .violet { background: #8a73f5; }
+    .metric span {
+      display: block;
+      color: #7b8799;
+      font-size: 12px;
+    }
+    .metric strong {
+      display: block;
+      margin-top: 10px;
+      font-size: 22px;
+      color: #06142c;
+    }
+    .metric.money strong {
+      font-size: 20px;
+      color: #ef4772;
+    }
+    .panel {
+      background: #fff;
+      border: 1px solid #e7edf5;
+      border-radius: 14px;
+      overflow: hidden;
+    }
+    .tabs {
+      height: 44px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border-bottom: 1px solid #e8eef6;
+    }
+    .tabs button {
+      border: 0;
+      background: transparent;
+      color: #8a96a9;
+      font-weight: 700;
+      font-size: 14px;
+      position: relative;
+    }
+    .tabs .active {
+      color: #06142c;
+    }
+    .tabs .active::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 2px;
+      background: #5e86f6;
+    }
+    .filters {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+    }
+    .select, .input {
+      height: 36px;
+      border: 1px solid #dce4ef;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      color: #5b687d;
+      font-size: 13px;
+      background: #fff;
+    }
+    .actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .primary, .ghost, .agree {
+      height: 34px;
+      border: 0;
+      border-radius: 8px;
+      font-weight: 800;
+    }
+    .primary {
+      color: #fff;
+      background: linear-gradient(135deg, #5d8af3, #7f68f0);
+    }
+    .ghost {
+      background: #f2f5fa;
+      color: #4c5a70;
+      border: 1px solid #e0e6ef;
+    }
+    .count {
+      padding: 0 12px 8px;
+      color: #7b8799;
+      font-size: 13px;
+    }
+    .batch-card {
+      margin: 10px 12px 0;
+      padding: 13px;
+      border-radius: 10px;
+      border: 1px solid #edf1f7;
+      border-left: 4px solid #8a73f5;
+      background: #fff;
+    }
+    .batch-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 9px;
+      font-size: 11px;
+      color: #3370ff;
+      font-weight: 800;
+    }
+    .tag {
+      padding: 2px 8px;
+      border-radius: 5px;
+      background: #eef3ff;
+      color: #3370ff;
+      font-size: 11px;
+    }
+    .tag.purple {
+      color: #7d5af7;
+      background: #f1ecff;
+    }
+    .time {
+      color: #8a96a9;
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+    .mini-stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      border-top: 1px solid #f0f3f8;
+      padding-top: 9px;
+      text-align: center;
+    }
+    .mini-stats span {
+      display: block;
+      color: #8b96a9;
+      font-size: 11px;
+    }
+    .mini-stats strong {
+      display: block;
+      margin-top: 4px;
+      font-size: 16px;
+    }
+    .ok { color: #22bf73; }
+    .bad { color: #ff474d; }
+    .agree {
+      margin-top: 10px;
+      min-width: 86px;
+      padding: 0 13px;
+      color: #fff;
+      background: #35c58b;
+    }
+    .compact-hero {
+      margin-bottom: 10px;
+      padding: 14px;
+      border-radius: 14px;
+      color: #fff;
+      background: linear-gradient(135deg, #1f2b43, #395b93);
+    }
+    .compact-hero span {
+      display: block;
+      font-size: 12px;
+      opacity: .75;
+    }
+    .compact-hero strong {
+      display: block;
+      margin-top: 5px;
+      font-size: 24px;
+    }
+    .quick-tabs {
+      display: flex;
+      gap: 8px;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+    .quick-tabs span {
+      flex: 0 0 auto;
+      padding: 7px 12px;
+      border-radius: 999px;
+      background: #fff;
+      border: 1px solid #e1e7f0;
+      color: #607087;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .quick-tabs .on {
+      background: #2f66e9;
+      color: #fff;
+      border-color: #2f66e9;
+    }
+    .list-card {
+      margin-bottom: 9px;
+      padding: 12px;
+      border-radius: 12px;
+      background: #fff;
+      border: 1px solid #e6edf6;
+    }
+    .list-top {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 9px;
+    }
+    .code {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: #2563eb;
+      font-weight: 800;
+      font-size: 12px;
+    }
+    .state {
+      margin-left: auto;
+      border-radius: 999px;
+      padding: 3px 8px;
+      color: #7650d7;
+      background: #eee9ff;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .progress {
+      height: 6px;
+      border-radius: 999px;
+      background: #edf1f6;
+      overflow: hidden;
+      margin-bottom: 10px;
+    }
+    .fill {
+      width: 68%;
+      height: 100%;
+      background: linear-gradient(90deg, #36c488, #5f87f6);
+    }
+    .inline-stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+    }
+    .inline-stats div {
+      min-width: 0;
+      padding: 7px 4px;
+      border-radius: 8px;
+      background: #f7f9fc;
+      text-align: center;
+    }
+    .inline-stats span {
+      display: block;
+      color: #8793a6;
+      font-size: 10px;
+    }
+    .inline-stats strong {
+      display: block;
+      margin-top: 3px;
+      font-size: 15px;
+    }
+    .dash-hero {
+      padding: 16px;
+      margin-bottom: 10px;
+      border-radius: 14px;
+      background: #fff;
+      border: 1px solid #e6edf6;
+    }
+    .dash-hero h3 {
+      margin: 0;
+      font-size: 16px;
+    }
+    .dash-hero p {
+      margin: 4px 0 0;
+      color: #718096;
+      font-size: 12px;
+    }
+    .kpi-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .kpi {
+      padding: 10px;
+      border-radius: 10px;
+      background: #f7f9fc;
+    }
+    .kpi span {
+      color: #7d889a;
+      font-size: 11px;
+    }
+    .kpi strong {
+      display: block;
+      margin-top: 4px;
+      font-size: 19px;
+    }
+    .section-title {
+      display: flex;
+      align-items: center;
+      margin: 12px 2px 8px;
+      font-size: 14px;
+      font-weight: 900;
+    }
+    .section-title small {
+      margin-left: auto;
+      color: #7d889a;
+      font-weight: 600;
+    }
+    @media (max-width: 1100px) {
+      .options { grid-template-columns: 1fr; }
+      .option > p { min-height: 0; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="intro">
+      <h1>记录中心移动端改版方向</h1>
+      <p>重点解决当前截图里的问题：顶部信息拥挤、筛选区占高、卡片层级偏散、补单记录缺少“处理优先级”。我建议优先选 A 或 B。</p>
+    </section>
+    <section class="options">
+      <article class="option">
+        <h2>A. 稳妥精修版</h2>
+        <p>保持现有结构，只做间距、卡片、顶部和按钮优化。开发成本低，用户迁移感最小。</p>
+        <div class="phone">
+          <div class="status"><span>9:41</span><span>现代数字化工作台</span></div>
+          <div class="topbar">
+            <div class="logo"></div><div class="brand">工作桌面</div><div class="menu">≡</div>
+            <div class="balance"><span>BALANCE</span><strong>¥10826.30</strong></div><div class="avatar">A</div>
+          </div>
+          <div class="content">
+            <div class="metric-grid">
+              <div class="metric"><i class="bubble pink">□</i><div><span>批次数</span><strong>11</strong></div></div>
+              <div class="metric"><i class="bubble green">✓</i><div><span>订单总数</span><strong>82</strong></div></div>
+              <div class="metric"><i class="bubble orange">◎</i><div><span>进行中</span><strong>4</strong></div></div>
+              <div class="metric money"><i class="bubble red">¥</i><div><span>累计消费</span><strong>¥18,070.00</strong></div></div>
+            </div>
+            <div class="panel">
+              <div class="tabs"><button>下单记录</button><button class="active">补单记录</button></div>
+              <div class="filters">
+                <div class="select">全部状态 ⌄</div>
+                <div class="actions"><button class="primary">搜索</button><button class="ghost">重置</button></div>
+              </div>
+              <div class="count">共 2 条记录</div>
+              <div class="batch-card">
+                <div class="batch-head">BATCH-MPMBE3KX-825D93 <span class="tag">read</span><span class="tag purple">ces3</span></div>
+                <div class="time">申请时间：2026-05-26 15:33:32</div>
+                <div class="mini-stats"><div><span>补单数</span><strong>1</strong></div><div><span>待审核</span><strong>0</strong></div><div><span>代理已批</span><strong class="ok">1</strong></div><div><span>差额总量</span><strong class="bad">150</strong></div></div>
+                <button class="agree">一键同意(1)</button>
+              </div>
+              <div class="batch-card">
+                <div class="batch-head">BATCH-MPJBAAH0-B8C20B <span class="tag">read</span><span class="tag purple">ay1</span></div>
+                <div class="time">申请时间：2026-05-26 15:09:08</div>
+                <div class="mini-stats"><div><span>补单数</span><strong>1</strong></div><div><span>待审核</span><strong>0</strong></div><div><span>代理已批</span><strong class="ok">0</strong></div><div><span>差额总量</span><strong class="bad">80</strong></div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </article>
+      <article class="option">
+        <h2>B. 效率型列表版</h2>
+        <p>把四个统计压成顶部摘要，筛选改成横向状态胶囊，列表显示进度条。更适合经常审核补单的人。</p>
+        <div class="phone">
+          <div class="status"><span>9:41</span><span>记录中心</span></div>
+          <div class="topbar">
+            <div class="menu">≡</div><div class="brand">补单记录</div><div class="icon-btn">⌕</div><div class="avatar">A</div>
+          </div>
+          <div class="content">
+            <div class="compact-hero"><span>今日待处理</span><strong>2 条补单</strong></div>
+            <div class="quick-tabs"><span class="on">全部 2</span><span>待审核 0</span><span>代理已批 1</span><span>处理中 1</span></div>
+            <div class="list-card">
+              <div class="list-top"><div class="code">BATCH-MPMBE3KX-825D93</div><span class="state">等管理员审核</span></div>
+              <div class="time">2026-05-26 15:33:32 · read · ces3</div>
+              <div class="progress"><div class="fill"></div></div>
+              <div class="inline-stats"><div><span>补单</span><strong>1</strong></div><div><span>待审</span><strong>0</strong></div><div><span>已批</span><strong class="ok">1</strong></div><div><span>差额</span><strong class="bad">150</strong></div></div>
+              <button class="agree">同意补单</button>
+            </div>
+            <div class="list-card">
+              <div class="list-top"><div class="code">BATCH-MPJBAAH0-B8C20B</div><span class="state">补单处理中</span></div>
+              <div class="time">2026-05-26 15:09:08 · read · ay1</div>
+              <div class="progress"><div class="fill" style="width:42%"></div></div>
+              <div class="inline-stats"><div><span>补单</span><strong>1</strong></div><div><span>待审</span><strong>0</strong></div><div><span>已批</span><strong class="ok">0</strong></div><div><span>差额</span><strong class="bad">80</strong></div></div>
+            </div>
+          </div>
+        </div>
+      </article>
+      <article class="option">
+        <h2>C. 运营仪表盘版</h2>
+        <p>顶部更像运营驾驶舱，突出金额和批次表现。视觉更强，但改动范围比前两版大。</p>
+        <div class="phone">
+          <div class="status"><span>9:41</span><span>工作桌面</span></div>
+          <div class="topbar">
+            <div class="logo"></div><div class="brand">记录中心</div><div class="menu">≡</div><div class="avatar">A</div>
+          </div>
+          <div class="content">
+            <div class="dash-hero">
+              <h3>补单审核看板</h3>
+              <p>余额 ¥10,826.30 · 今日申请 2 条</p>
+              <div class="kpi-row">
+                <div class="kpi"><span>累计消费</span><strong class="bad">¥18,070</strong></div>
+                <div class="kpi"><span>订单总数</span><strong>82</strong></div>
+                <div class="kpi"><span>批次数</span><strong>11</strong></div>
+                <div class="kpi"><span>进行中</span><strong>4</strong></div>
+              </div>
+            </div>
+            <div class="quick-tabs"><span>下单记录</span><span class="on">补单记录</span><span>退款</span></div>
+            <div class="section-title">待处理 <small>按差额排序</small></div>
+            <div class="list-card">
+              <div class="list-top"><div class="code">BATCH-MPMBE3KX-825D93</div><span class="state">管理员审核</span></div>
+              <div class="inline-stats"><div><span>补单</span><strong>1</strong></div><div><span>待审</span><strong>0</strong></div><div><span>已批</span><strong class="ok">1</strong></div><div><span>差额</span><strong class="bad">150</strong></div></div>
+              <button class="agree">立即处理</button>
+            </div>
+            <div class="section-title">处理中 <small>1 条</small></div>
+            <div class="list-card">
+              <div class="list-top"><div class="code">BATCH-MPJBAAH0-B8C20B</div><span class="state">处理中</span></div>
+              <div class="inline-stats"><div><span>补单</span><strong>1</strong></div><div><span>待审</span><strong>0</strong></div><div><span>已批</span><strong class="ok">0</strong></div><div><span>差额</span><strong class="bad">80</strong></div></div>
+            </div>
+          </div>
+        </div>
+      </article>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'url'
 import path from 'path'
 import express from 'express'
+import compression from 'compression'
 import cors from 'cors'
 import crypto from 'crypto'
 import config from './config/index.js'
@@ -26,6 +27,7 @@ import widgetRoutes from './routes/widget.js'
 const app = express()
 
 // 中间件
+app.use(compression())
 app.use(cors())
 app.use(express.json({ limit: '5mb' }))
 
@@ -41,6 +43,24 @@ app.use('/api/chat', chatRoutes)
 app.use('/api/cs-config', csConfigRoutes)
 app.use('/api/refund', refundRoutes)
 app.use('/api/widget', widgetRoutes)
+
+// TinyDataPay 反向代理 — 避免直连外网超时 / 代理不可用
+app.all('/pay-proxy/*path', async (req, res) => {
+  const target = 'https://pay.tinydata.cc/' + req.params.path + (req._parsedUrl?.search || '')
+  try {
+    const headers = { 'Content-Type': 'application/json; charset=utf-8' }
+    const opts = { method: req.method, headers, signal: AbortSignal.timeout(15000) }
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      opts.body = JSON.stringify(req.body)
+    }
+    const upstream = await fetch(target, opts)
+    const data = await upstream.text()
+    res.status(upstream.status).type('application/json').send(data)
+  } catch (err) {
+    console.error('[PAY-PROXY]', err.message)
+    res.status(502).json({ code: 502, message: '支付网关连接失败: ' + err.message })
+  }
+})
 
 // 嵌入令牌
 app.get('/api/embed-token', authRequired, (req, res) => {

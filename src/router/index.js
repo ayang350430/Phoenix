@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { getStoredRoles, hasAdminRole, isRegularUserRoleSet } from '../utils/storedRoles.js'
 
 const routes = [
   {
@@ -29,7 +30,13 @@ const routes = [
     path: '/records',
     name: 'Records',
     component: () => import('../components/RecordsPage.vue'),
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, requiresAdmin: true }
+  },
+  {
+    path: '/my-orders',
+    name: 'MyOrders',
+    component: () => import('../components/RecordsPage.vue'),
+    meta: { requiresAuth: true, requiresRegularUser: true }
   },
   {
     path: '/batch',
@@ -88,6 +95,23 @@ router.beforeEach((to, from, next) => {
   if (to.meta.requiresAuth && !hasToken) {
     next('/login')
     return
+  }
+
+  // 管理员页面权限检查
+  const storedRoles = hasToken ? getStoredRoles() : []
+
+  if (to.meta.requiresAdmin && hasToken) {
+    if (!hasAdminRole(storedRoles)) {
+      next('/dashboard')
+      return
+    }
+  }
+
+  if (to.meta.requiresRegularUser && hasToken) {
+    if (!isRegularUserRoleSet(storedRoles)) {
+      next('/dashboard')
+      return
+    }
   }
 
   // 已登录访问公开页面 → 跳仪表盘

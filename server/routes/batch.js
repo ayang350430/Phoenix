@@ -4,16 +4,17 @@ import { authRequired, adminRequired } from '../middleware/auth.js'
 import Config from '../models/Config.js'
 import Product from '../models/Product.js'
 import AgentPrice from '../models/AgentPrice.js'
-import Task from '../models/Task.js'
 import { collectSnapshots, fetchSnapshot, fetchNoteId, fetchNoteBasic } from '../services/noteApi.js'
 import { cancelTask } from '../services/xhsApi.js'
+import { filterLookupOrders } from '../services/orderLookupPolicy.js'
+import { creditAgentCommission, clawbackAgentCommission } from '../services/agentCommission.js'
 import db from '../db.js'
 
 const router = Router()
 
 const SNAPSHOT_RETRY_DELAY = 2 * 60_000
 
-async function retryMissingSnapshots(batchDbId, targetType) {
+async function retryMissingSnapshots(batchDbId, targetType, dataSource = 'realtime') {
   try {
     const query = db('orders').where({ batch_id: batchDbId })
 
@@ -31,7 +32,7 @@ async function retryMissingSnapshots(batchDbId, targetType) {
 
     for (const order of orders) {
       try {
-        const snap = await fetchSnapshot(order.note_url, targetType)
+        const snap = await fetchSnapshot(order.note_url, targetType, order.data_source || dataSource)
 
         const updateData = { updated_at: new Date() }
         if (!order.note_id && snap.note_id) updateData.note_id = snap.note_id
@@ -68,7 +69,20 @@ async function retryMissingSnapshots(batchDbId, targetType) {
       })
       console.log('[batch] orders 表已添加 product_id 列')
     }
-  } catch (e) { console.warn('[batch] product_id 迁移跳过:', e.message) }
+    // data_source：快照数据源 realtime=实时 pgy=蒲公英
+    if (await db.schema.hasTable('orders') && !(await db.schema.hasColumn('orders', 'data_source'))) {
+      await db.schema.alterTable('orders', t => {
+        t.string('data_source', 20).nullable().defaultTo('realtime')
+      })
+      console.log('[batch] orders 表已添加 data_source 列')
+    }
+    if (await db.schema.hasTable('order_batches') && !(await db.schema.hasColumn('order_batches', 'data_source'))) {
+      await db.schema.alterTable('order_batches', t => {
+        t.string('data_source', 20).nullable().defaultTo('realtime')
+      })
+      console.log('[batch] order_batches 表已添加 data_source 列')
+    }
+  } catch (e) { console.warn('[batch] 列迁移跳过:', e.message) }
 })()
 
 const DEFAULT_CONFIG = {
@@ -120,6 +134,78 @@ router.put('/config', authRequired, adminRequired, async (req, res) => {
 
 const XHS_PATTERN = /^https?:\/\/(www\.)?(xhslink\.com|xiaohongshu\.com)\//
 
+async function validateBatchUrls(urls) {
+  const seen = new Set()
+  const results = urls.map(url => {
+    const trimmed = (url || '').trim()
+    if (!trimmed) return { url: trimmed, valid: false, message: '链接为空' }
+    if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+      return { url: trimmed, valid: false, message: '链接格式无效' }
+    }
+    if (!XHS_PATTERN.test(trimmed)) {
+      return { url: trimmed, valid: false, message: '非小红书链接' }
+    }
+    if (seen.has(trimmed)) {
+      return { url: trimmed, valid: false, message: '重复链接' }
+    }
+    seen.add(trimmed)
+    return { url: trimmed, valid: true }
+  })
+
+  // 检查已有活跃订单冲突
+  const validUrls = results.filter(r => r.valid).map(r => r.url)
+  if (validUrls.length > 0) {
+    const activeStatuses = ['pending', 'running', 'processing']
+    const conflicts = await db('orders')
+      .whereIn('note_url', validUrls)
+      .whereIn('order_status', activeStatuses)
+      .select('note_url')
+    const conflictSet = new Set(conflicts.map(c => c.note_url))
+    for (const r of results) {
+      if (r.valid && conflictSet.has(r.url)) {
+        r.valid = false
+        r.message = '该链接已有进行中的订单'
+      }
+    }
+  }
+
+  // 解析 note_id 和博主信息 — 获取不到则不通过
+  const toResolve = results.filter(r => r.valid)
+  if (toResolve.length > 0) {
+    const CONCURRENCY = 10
+    for (let i = 0; i < toResolve.length; i += CONCURRENCY) {
+      const chunk = toResolve.slice(i, i + CONCURRENCY)
+      await Promise.all(chunk.map(async (r) => {
+        try {
+          const noteId = await fetchNoteId(r.url)
+          if (!noteId) {
+            r.valid = false
+            r.message = '无法解析笔记ID'
+            return
+          }
+          r.note_id = noteId
+
+          const basic = await fetchNoteBasic(noteId)
+          if (!basic || !basic.author_id) {
+            r.valid = false
+            r.message = '无法获取博主信息'
+            return
+          }
+          r.author_id = basic.author_id
+          r.author_name = basic.author_name || ''
+          r.title = basic.title || ''
+          r.avatar_url = basic.avatar_url || ''
+        } catch {
+          r.valid = false
+          r.message = '链接信息获取失败'
+        }
+      }))
+    }
+  }
+
+  return results
+}
+
 // POST /api/batch/prevalidate
 router.post('/prevalidate', authRequired, async (req, res) => {
   try {
@@ -128,73 +214,7 @@ router.post('/prevalidate', authRequired, async (req, res) => {
       return res.status(400).json({ code: 400, message: '请提供链接列表' })
     }
 
-    const seen = new Set()
-    const results = urls.map(url => {
-      const trimmed = (url || '').trim()
-      if (!trimmed) return { url: trimmed, valid: false, message: '链接为空' }
-      if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
-        return { url: trimmed, valid: false, message: '链接格式无效' }
-      }
-      if (!XHS_PATTERN.test(trimmed)) {
-        return { url: trimmed, valid: false, message: '非小红书链接' }
-      }
-      if (seen.has(trimmed)) {
-        return { url: trimmed, valid: false, message: '重复链接' }
-      }
-      seen.add(trimmed)
-      return { url: trimmed, valid: true }
-    })
-
-    // 检查已有活跃订单冲突
-    const validUrls = results.filter(r => r.valid).map(r => r.url)
-    if (validUrls.length > 0) {
-      const activeStatuses = ['pending', 'running', 'processing']
-      const conflicts = await db('orders')
-        .whereIn('note_url', validUrls)
-        .whereIn('order_status', activeStatuses)
-        .select('note_url')
-      const conflictSet = new Set(conflicts.map(c => c.note_url))
-      for (const r of results) {
-        if (r.valid && conflictSet.has(r.url)) {
-          r.valid = false
-          r.message = '该链接已有进行中的订单'
-        }
-      }
-    }
-
-    // 解析 note_id 和博主信息 — 获取不到则不通过
-    const toResolve = results.filter(r => r.valid)
-    if (toResolve.length > 0) {
-      const CONCURRENCY = 10
-      for (let i = 0; i < toResolve.length; i += CONCURRENCY) {
-        const chunk = toResolve.slice(i, i + CONCURRENCY)
-        await Promise.all(chunk.map(async (r) => {
-          try {
-            const noteId = await fetchNoteId(r.url)
-            if (!noteId) {
-              r.valid = false
-              r.message = '无法解析笔记ID'
-              return
-            }
-            r.note_id = noteId
-
-            const basic = await fetchNoteBasic(noteId)
-            if (!basic || !basic.author_id) {
-              r.valid = false
-              r.message = '无法获取博主信息'
-              return
-            }
-            r.author_id = basic.author_id
-            r.author_name = basic.author_name || ''
-            r.title = basic.title || ''
-            r.avatar_url = basic.avatar_url || ''
-          } catch {
-            r.valid = false
-            r.message = '链接信息获取失败'
-          }
-        }))
-      }
-    }
+    const results = await validateBatchUrls(urls)
 
     res.json({ code: 0, data: { results } })
   } catch (err) {
@@ -209,7 +229,7 @@ router.post('/prevalidate', authRequired, async (req, res) => {
 router.post('/submit', authRequired, async (req, res) => {
   const conn = await db.client.pool.acquire().promise
   try {
-    const { type, product_id, lines } = req.body
+    const { type, product_id, lines, data_source: reqDataSource } = req.body
     const userId = req.user.id
 
     if (!type || !Array.isArray(lines) || lines.length === 0) {
@@ -231,6 +251,12 @@ router.post('/submit', authRequired, async (req, res) => {
     // 解析当前用户的实际价格（多级定价）
     const unitPrice = await AgentPrice.resolvePrice(userId, product.id, product.unit_price)
     const minQuantity = product.min_quantity || 10
+    // 数据源：realtime=实时（/realtime），pgy=蒲公英（/pgy）—— 决定查快照走哪个接口
+    // 商品配置 data_source（realtime/pgy/both）决定允许范围；前端选择须在范围内，否则取第一个允许的
+    const allowedSources = product.data_source === 'both'
+      ? ['realtime', 'pgy']
+      : (product.data_source === 'pgy' ? ['pgy'] : ['realtime'])
+    const dataSource = allowedSources.includes(reqDataSource) ? reqDataSource : allowedSources[0]
 
     // 校验行（含 quantity 类型和上限校验）
     const validLines = lines.filter(l => {
@@ -240,15 +266,29 @@ router.post('/submit', authRequired, async (req, res) => {
     if (validLines.length === 0) {
       return res.status(400).json({ code: 400, message: '没有有效的提交行' })
     }
+    if (validLines.length !== lines.length) {
+      return res.status(400).json({ code: 400, message: '存在无效提交行，请修正后重新校验' })
+    }
+
+    const prevalidateResults = await validateBatchUrls(validLines.map(l => l.url))
+    const failedPrevalidate = prevalidateResults.find(r => !r.valid)
+    if (failedPrevalidate) {
+      return res.status(400).json({
+        code: 400,
+        message: `预校验未通过：${failedPrevalidate.message || '链接无效'}`,
+        data: { results: prevalidateResults }
+      })
+    }
 
     const totalQuantity = validLines.reduce((s, l) => s + l.quantity, 0)
     const totalCost = Math.round(totalQuantity * unitPrice * 10000) / 10000
+    console.log(`[batch/submit] userId=${userId} product=${product.id} basePrice=${product.unit_price} resolvedPrice=${unitPrice} qty=${totalQuantity} totalCost=${totalCost}`)
 
-    // 采集快照（曝光除外）
+    // 采集快照（曝光除外）—— 按数据源走对应接口
     let snapshots = new Map()
     if (type !== 'impression') {
       try {
-        snapshots = await collectSnapshots(validLines, type)
+        snapshots = await collectSnapshots(validLines, type, dataSource)
       } catch (e) {
         console.warn('[batch/submit] 快照采集失败，继续提交:', e.message)
       }
@@ -260,6 +300,7 @@ router.post('/submit', authRequired, async (req, res) => {
       // 事务内加行锁检查余额（防止并发超扣）
       const balRow = await trx('balance_accounts').where({ user_id: userId }).forUpdate().first()
       const available = balRow ? parseFloat(balRow.available_amount) : 0
+      console.log(`[batch/submit] balance=${available} totalCost=${totalCost} sufficient=${available >= totalCost}`)
       if (available < totalCost) {
         await trx.rollback()
         return res.status(400).json({ code: 400, message: '余额不足' })
@@ -277,6 +318,7 @@ router.post('/submit', authRequired, async (req, res) => {
         batch_no: batchNo,
         user_id: userId,
         source_type: type,
+        data_source: dataSource,
         submit_mode: 'batch',
         raw_content: validLines.map(l => `${l.url} ${l.quantity}`).join('\n'),
         estimated_amount: totalCost,
@@ -294,28 +336,31 @@ router.post('/submit', authRequired, async (req, res) => {
 
       // 2. 创建订单
       let runningBalance = available
+      const createdOrders = []
       for (let i = 0; i < validLines.length; i++) {
         const line = validLines[i]
         const orderTs = Date.now()
         const orderNo = `ORDER-${orderTs}-${String(i + 1).padStart(4, '0')}`
         const itemCost = Math.round(line.quantity * unitPrice * 10000) / 10000
 
-        // 快照数据
+        // 快照数据；快照失败时，沿用提交前预校验已经解析到的笔记元数据
         const snap = snapshots.get(i) || {}
+        const prevalidated = prevalidateResults[i] || {}
 
         const [orderId] = await trx('orders').insert({
           order_no: orderNo,
           user_id: userId,
           batch_id: insertId,
           batch_item_id: i + 1,
-          note_id: snap.note_id || null,
+          note_id: snap.note_id || prevalidated.note_id || null,
           note_url: line.url,
           target_type: type,
           product_id: product.id,
-          title: snap.title || null,
-          author_id: snap.author_id || null,
-          author_name: snap.author_name || null,
-          avatar_url: snap.avatar_url || null,
+          data_source: dataSource,
+          title: snap.title || prevalidated.title || null,
+          author_id: snap.author_id || prevalidated.author_id || null,
+          author_name: snap.author_name || prevalidated.author_name || null,
+          avatar_url: snap.avatar_url || prevalidated.avatar_url || null,
           like_count: snap.like_count ?? null,
           ordered_quantity: line.quantity,
           completed_quantity: 0,
@@ -357,6 +402,7 @@ router.post('/submit', authRequired, async (req, res) => {
         })
 
         runningBalance = afterBalance
+        createdOrders.push({ orderId, orderNo, quantity: line.quantity })
       }
 
       // 4. 扣余额
@@ -365,10 +411,25 @@ router.post('/submit', authRequired, async (req, res) => {
         updated_at: now
       })
 
+      // 5. 代理分润：下级下单 → 把（实付单价 − 底价）划入上级代理余额并提示
+      //    与扣费同事务，保证原子一致；失败则整单回滚
+      const submitter = await trx('users').where({ id: userId })
+        .select('referred_by', 'username', 'nickname').first()
+      if (submitter?.referred_by && submitter.referred_by !== userId) {
+        await creditAgentCommission(trx, {
+          agentId: submitter.referred_by,
+          basePrice: parseFloat(product.unit_price),
+          unitPrice,
+          orders: createdOrders,
+          fromLabel: submitter.nickname || submitter.username || ('用户' + userId),
+          batchNo
+        })
+      }
+
       await trx.commit()
 
       if (type !== 'impression') {
-        setTimeout(() => retryMissingSnapshots(insertId, type), SNAPSHOT_RETRY_DELAY)
+        setTimeout(() => retryMissingSnapshots(insertId, type, dataSource), SNAPSHOT_RETRY_DELAY)
       }
 
       res.json({
@@ -406,19 +467,26 @@ router.get('/:id/orders', authRequired, async (req, res) => {
       return res.status(403).json({ code: 403, message: '无权访问' })
     }
 
+    const chargeSummary = db('account_records')
+      .where('record_type', 'order_charge')
+      .where('status', 'success')
+      .select('order_id')
+      .max('actual_paid_amount as actual_paid_amount')
+      .max('payable_amount as payable_amount')
+      .max('discount_rate as discount_rate')
+      .max('status as charge_status')
+      .groupBy('order_id')
+
     const orders = await db('orders')
-      .leftJoin('account_records', function () {
-        this.on('account_records.order_id', '=', 'orders.id')
-          .andOn('account_records.record_type', '=', db.raw("'order_charge'"))
-      })
+      .leftJoin(chargeSummary.as('charge_summary'), 'charge_summary.order_id', 'orders.id')
       .leftJoin('products', 'products.id', 'orders.product_id')
       .where('orders.batch_id', batchDbId)
       .select(
         'orders.*',
-        'account_records.actual_paid_amount',
-        'account_records.payable_amount',
-        'account_records.discount_rate',
-        'account_records.status as charge_status',
+        'charge_summary.actual_paid_amount',
+        'charge_summary.payable_amount',
+        'charge_summary.discount_rate',
+        'charge_summary.charge_status',
         'products.name as product_name',
         'products.api_endpoint as product_api_endpoint'
       )
@@ -433,12 +501,15 @@ router.get('/:id/orders', authRequired, async (req, res) => {
 
 // ========== 批量查询订单 ==========
 
-// POST /api/batch/orders/lookup — 根据订单ID批量查询订单详情（含上游状态）
+// POST /api/batch/orders/lookup — 根据订单ID或链接批量查询订单详情（含上游状态）
 router.post('/orders/lookup', authRequired, async (req, res) => {
   try {
-    const { ids } = req.body
-    if (!Array.isArray(ids) || ids.length === 0) {
-      return res.status(400).json({ code: 400, message: '请提供订单ID列表' })
+    const { ids, urls, batch_nos } = req.body
+    const hasIds = Array.isArray(ids) && ids.length > 0
+    const hasUrls = Array.isArray(urls) && urls.length > 0
+    const hasBatchNos = Array.isArray(batch_nos) && batch_nos.length > 0
+    if (!hasIds && !hasUrls && !hasBatchNos) {
+      return res.status(400).json({ code: 400, message: '请提供订单ID、链接或批次号' })
     }
 
     const userId = req.user.id
@@ -446,10 +517,17 @@ router.post('/orders/lookup', authRequired, async (req, res) => {
     const isAdmin = roles.includes('admin') || roles.includes('super')
     const isAgent = roles.includes('agent')
 
-    // 最多查 200 条
-    const lookupIds = ids.slice(0, 200).map(Number).filter(n => n > 0)
-    if (lookupIds.length === 0) {
-      return res.status(400).json({ code: 400, message: '没有有效的订单ID' })
+    const lookupIds = hasIds ? ids.slice(0, 200).map(Number).filter(n => n > 0) : []
+    const lookupUrls = hasUrls ? urls.slice(0, 200).map(u => u.trim()).filter(Boolean) : []
+    const allNos = hasBatchNos ? batch_nos.slice(0, 50).map(s => s.trim()).filter(Boolean) : []
+    // 自动区分批次号和订单号
+    const lookupBatchNos = allNos.filter(s => /^BATCH-/i.test(s))
+    const lookupOrderNos = allNos.filter(s => /^ORDER-/i.test(s))
+    // 既不是BATCH-也不是ORDER-的，两边都查
+    const ambiguousNos = allNos.filter(s => !/^BATCH-/i.test(s) && !/^ORDER-/i.test(s))
+
+    if (lookupIds.length === 0 && lookupUrls.length === 0 && allNos.length === 0) {
+      return res.status(400).json({ code: 400, message: '没有有效的查询条件' })
     }
 
     const hasProductId = await db.schema.hasColumn('orders', 'product_id')
@@ -463,6 +541,7 @@ router.post('/orders/lookup', authRequired, async (req, res) => {
       'orders.order_status', 'orders.external_task_id', 'orders.external_status',
       'orders.external_progress', 'orders.external_completed_quantity',
       'orders.external_last_synced_at', 'orders.user_id',
+      'orders.reason_message',
       'orders.created_at', 'orders.updated_at',
       'products.name as product_name',
       'products.api_endpoint'
@@ -471,10 +550,41 @@ router.post('/orders/lookup', authRequired, async (req, res) => {
 
     let q = db('orders')
       .leftJoin('products', joinCondition)
-      .whereIn('orders.id', lookupIds)
-      .select(selectCols)
 
-    // 权限过滤：代理可查下级，普通用户只查自己
+    // 批次号查询需要 join order_batches
+    const needBatchJoin = lookupBatchNos.length > 0 || ambiguousNos.length > 0
+    if (needBatchJoin) {
+      q = q.leftJoin('order_batches', 'order_batches.id', 'orders.batch_id')
+    }
+
+    q = q.select(selectCols)
+
+    // 按 ID / URL / 批次号 / 订单号 查询
+    const conditions = []
+    if (lookupIds.length > 0) conditions.push(function () { this.whereIn('orders.id', lookupIds) })
+    if (lookupUrls.length > 0) conditions.push(function () { this.whereIn('orders.note_url', lookupUrls) })
+    if (lookupBatchNos.length > 0) conditions.push(function () { this.whereIn('order_batches.batch_no', lookupBatchNos) })
+    if (lookupOrderNos.length > 0) conditions.push(function () { this.whereIn('orders.order_no', lookupOrderNos) })
+    if (ambiguousNos.length > 0) {
+      // 不确定的编号，同时查 batch_no 和 order_no
+      conditions.push(function () {
+        this.whereIn('order_batches.batch_no', ambiguousNos)
+            .orWhereIn('orders.order_no', ambiguousNos)
+      })
+    }
+
+    if (conditions.length === 1) {
+      q = q.where(conditions[0])
+    } else if (conditions.length > 1) {
+      q = q.where(function () {
+        this.where(conditions[0])
+        for (let i = 1; i < conditions.length; i++) {
+          this.orWhere(conditions[i])
+        }
+      })
+    }
+
+    // 权限过滤
     if (!isAdmin) {
       if (isAgent) {
         const subIds = await db('users').where({ referred_by: userId }).pluck('id')
@@ -485,32 +595,41 @@ router.post('/orders/lookup', authRequired, async (req, res) => {
       }
     }
 
-    const orders = await q
+    const orders = filterLookupOrders(await q)
 
-    // 标记哪些ID未找到
+    // 标记未找到
     const foundIds = new Set(orders.map(o => o.id))
-    const notFound = lookupIds.filter(id => !foundIds.has(id))
+    const foundUrls = new Set(orders.map(o => o.note_url))
+    const notFoundIds = lookupIds.filter(id => !foundIds.has(id))
+    const notFoundUrls = lookupUrls.filter(u => !foundUrls.has(u))
 
-    const data = orders.map(o => ({
-      id: o.id,
-      order_no: o.order_no,
-      note_url: o.note_url,
-      target_type: o.target_type,
-      product_name: o.product_name || null,
-      ordered_quantity: o.ordered_quantity,
-      completed_quantity: o.completed_quantity,
-      order_status: o.order_status,
-      external_task_id: o.external_task_id || null,
-      external_status: o.external_status || null,
-      external_progress: o.external_progress || 0,
-      external_completed_quantity: o.external_completed_quantity || 0,
-      external_last_synced_at: o.external_last_synced_at || null,
-      has_upstream: !!o.api_endpoint,
-      created_at: o.created_at,
-      updated_at: o.updated_at
-    }))
+    const data = orders.map(o => {
+      const progress = o.ordered_quantity > 0
+        ? Math.min(100, Math.round((o.completed_quantity || 0) / o.ordered_quantity * 100))
+        : 0
+      return {
+        id: o.id,
+        order_no: o.order_no,
+        note_url: o.note_url,
+        target_type: o.target_type,
+        product_name: o.product_name || null,
+        ordered_quantity: o.ordered_quantity,
+        completed_quantity: o.completed_quantity,
+        progress,
+        order_status: o.order_status,
+        reason_message: o.reason_message || null,
+        external_task_id: o.external_task_id || null,
+        external_status: o.external_status || null,
+        external_progress: o.external_progress || 0,
+        external_completed_quantity: o.external_completed_quantity || 0,
+        external_last_synced_at: o.external_last_synced_at || null,
+        has_upstream: !!o.api_endpoint,
+        created_at: o.created_at,
+        updated_at: o.updated_at
+      }
+    })
 
-    res.json({ code: 0, data: { orders: data, not_found: notFound } })
+    res.json({ code: 0, data: { orders: data, not_found_ids: notFoundIds, not_found_urls: notFoundUrls } })
   } catch (err) {
     console.error('[batch/orders/lookup]', err.message)
     res.status(500).json({ code: 500, message: '查询失败: ' + err.message })
@@ -600,6 +719,9 @@ router.post('/:id/refund', authRequired, async (req, res) => {
             available_amount: afterBal, updated_at: now
           })
 
+          // 退款 → 扣回已划给上级代理的分润
+          await clawbackAgentCommission(trx, order, refundQty)
+
           totalRefund += refundAmount
         }
 
@@ -646,7 +768,7 @@ router.post('/:id/refund', authRequired, async (req, res) => {
       })
     )
     if (toCancel.length > 0) {
-      await db('orders').whereIn('id', toCancel.map(o => o.id)).update({ external_status: 'cancelled' })
+      await db('orders').whereIn('id', toCancel.map(o => o.id)).update({ external_status: 'cancelled', order_status: 'refunding', updated_at: new Date() })
     }
     console.log(`[batch/refund] 批次${batchId} 停止上游任务: ${stopResults.length}条`)
 
@@ -734,6 +856,9 @@ router.post('/orders/:id/refund', authRequired, async (req, res) => {
           available_amount: afterBal, updated_at: now
         })
 
+        // 退款 → 扣回已划给上级代理的分润
+        await clawbackAgentCommission(trx, order, refundQty)
+
         // 检查批次内是否全部退完
         const remaining = await trx('orders').where({ batch_id: order.batch_id })
           .whereNotIn('order_status', ['refunded', 'cancelled', 'completed', 'partial_completed']).first()
@@ -762,7 +887,7 @@ router.post('/orders/:id/refund', authRequired, async (req, res) => {
     if (['running', 'pending'].includes(order.order_status)) {
       const prod = await db('products').where({ target_type: order.target_type }).whereNotNull('api_endpoint').first()
       const result = await cancelTask(order.target_type, order.external_task_id, prod?.api_endpoint)
-      await db('orders').where({ id: orderId }).update({ external_status: 'cancelled' })
+      await db('orders').where({ id: orderId }).update({ external_status: 'cancelled', order_status: 'refunding', updated_at: new Date() })
       console.log(`[order/refund] 停止上游任务 order=${orderId} task=${order.external_task_id}:`, result)
     }
 
@@ -795,118 +920,39 @@ router.post('/orders/:id/request-supplement', authRequired, async (req, res) => 
       return res.status(403).json({ code: 403, message: '无权操作' })
     }
 
-    // 检查是否已有未处理的补单申请
-    const existing = await Task.getReplenishmentByOrderId(order.id)
-    if (existing) {
-      return res.status(400).json({ code: 400, message: '该订单已有待处理的补单申请' })
-    }
-
-    // 必须先验证过
-    if (!order.last_verified_at) {
-      return res.status(400).json({ code: 400, message: '请先验证订单快照' })
-    }
-
-    // 计算缺量
-    let actualCount = 0
-    let baseLine = 0
-    if (order.target_type === 'like') {
-      baseLine = order.like_count ?? 0
-      actualCount = order.snapshot_verified_like_count ?? 0
-    } else {
-      baseLine = order.snapshot_current_read_count ?? 0
-      actualCount = order.snapshot_verified_read_count ?? 0
-    }
-    const actualGain = Math.max(0, actualCount - baseLine)
-    const shortage = Math.max(0, order.ordered_quantity - actualGain)
-
-    if (shortage <= 0) {
-      return res.status(400).json({ code: 400, message: '订单已达标，无需补单' })
-    }
-
-    // 创建补单申请
-    const now = new Date()
-    const ts = Date.now().toString(36).toUpperCase()
-    const hex = crypto.randomBytes(3).toString('hex').toUpperCase()
-    const repNo = `REP-${ts}-${hex}`
-
-    await db('order_replenishment_records').insert({
-      replenishment_no: repNo,
-      order_id: order.id,
-      order_no: order.order_no,
-      batch_id: order.batch_id,
-      user_id: userId,
-      target_type: order.target_type,
-      note_id: order.note_id || null,
-      note_url: order.note_url,
-      original_external_task_id: order.external_task_id || null,
-      ordered_quantity: order.ordered_quantity,
-      actual_quantity: actualGain,
-      shortage_quantity: shortage,
-      snapshot_before_count: baseLine,
-      snapshot_after_count: actualCount,
-      status: 'pending',
-      reason_message: req.body.reason || '验证未达标，申请补单',
-      requested_at: now,
-      created_at: now,
-      updated_at: now
-    })
-
-    res.json({ code: 0, message: '补单申请已提交，等待管理员审核' })
+    res.status(400).json({ code: 400, message: '补单由上游完成后的自动快照验证触发' })
   } catch (err) {
     console.error('[batch/request-supplement]', err.message)
     res.status(500).json({ code: 500, message: '申请失败：' + err.message })
   }
 })
 
-// ========== 审批补单（两级：代理 → 管理员） ==========
+// ========== 审批补单（仅管理员） ==========
 
 // PUT /api/batch/supplement/:id/approve
 router.put('/supplement/:id/approve', authRequired, async (req, res) => {
   try {
     const roles = req.user.roles || []
     const isAdmin = roles.includes('admin') || roles.includes('super')
-    const isAgent = roles.includes('agent')
-    if (!isAdmin && !isAgent) {
+    if (!isAdmin) {
       return res.status(403).json({ code: 403, message: '无审批权限' })
     }
 
     const record = await db('order_replenishment_records').where({ id: Number(req.params.id) }).first()
     if (!record) return res.status(404).json({ code: 404, message: '记录不存在' })
 
-    if (isAgent && !isAdmin) {
-      // 代理只能审批团队下属的、状态为 pending 的
-      const subordinates = await db('users').where({ referred_by: req.user.id }).select('id')
-      const teamIds = [req.user.id, ...subordinates.map(u => u.id)]
-      if (!teamIds.includes(record.user_id)) {
-        return res.status(403).json({ code: 403, message: '无权审批此记录' })
-      }
-      if (record.status !== 'pending') {
-        return res.status(400).json({ code: 400, message: `当前状态为 ${record.status}，无法审批` })
-      }
-
-      await db('order_replenishment_records').where({ id: record.id }).update({
-        status: 'agent_approved',
-        agent_reviewed_at: new Date(),
-        agent_reviewed_by: req.user.id,
-        updated_at: new Date()
-      })
-
-      res.json({ code: 0, message: '代理已批准，等待管理员最终审批' })
-    } else {
-      // 管理员可以审批 pending 或 agent_approved
-      if (record.status !== 'pending' && record.status !== 'agent_approved') {
-        return res.status(400).json({ code: 400, message: `当前状态为 ${record.status}，无法审批` })
-      }
-
-      await db('order_replenishment_records').where({ id: record.id }).update({
-        status: 'processing',
-        reviewed_at: new Date(),
-        reviewed_by: req.user.id,
-        updated_at: new Date()
-      })
-
-      res.json({ code: 0, message: '已批准，补单处理中' })
+    if (record.status !== 'pending' && record.status !== 'agent_approved') {
+      return res.status(400).json({ code: 400, message: `当前状态为 ${record.status}，无法审批` })
     }
+
+    await db('order_replenishment_records').where({ id: record.id }).update({
+      status: 'processing',
+      reviewed_at: new Date(),
+      reviewed_by: req.user.id,
+      updated_at: new Date()
+    })
+
+    res.json({ code: 0, message: '已批准，补单处理中' })
   } catch (err) {
     console.error('[supplement/approve]', err.message)
     res.status(500).json({ code: 500, message: err.message })
@@ -918,27 +964,15 @@ router.put('/supplement/:id/reject', authRequired, async (req, res) => {
   try {
     const roles = req.user.roles || []
     const isAdmin = roles.includes('admin') || roles.includes('super')
-    const isAgent = roles.includes('agent')
-    if (!isAdmin && !isAgent) {
+    if (!isAdmin) {
       return res.status(403).json({ code: 403, message: '无审批权限' })
     }
 
     const record = await db('order_replenishment_records').where({ id: Number(req.params.id) }).first()
     if (!record) return res.status(404).json({ code: 404, message: '记录不存在' })
 
-    if (isAgent && !isAdmin) {
-      const subordinates = await db('users').where({ referred_by: req.user.id }).select('id')
-      const teamIds = [req.user.id, ...subordinates.map(u => u.id)]
-      if (!teamIds.includes(record.user_id)) {
-        return res.status(403).json({ code: 403, message: '无权操作此记录' })
-      }
-      if (record.status !== 'pending') {
-        return res.status(400).json({ code: 400, message: `当前状态为 ${record.status}，无法操作` })
-      }
-    } else {
-      if (record.status !== 'pending' && record.status !== 'agent_approved') {
-        return res.status(400).json({ code: 400, message: `当前状态为 ${record.status}，无法操作` })
-      }
+    if (record.status !== 'pending' && record.status !== 'agent_approved') {
+      return res.status(400).json({ code: 400, message: `当前状态为 ${record.status}，无法操作` })
     }
 
     await db('order_replenishment_records').where({ id: record.id }).update({
@@ -952,6 +986,214 @@ router.put('/supplement/:id/reject', authRequired, async (req, res) => {
     res.json({ code: 0, message: '已驳回补单申请' })
   } catch (err) {
     console.error('[supplement/reject]', err.message)
+    res.status(500).json({ code: 500, message: err.message })
+  }
+})
+
+// ========== 问题订单导出（仅管理员） ==========
+
+// GET /api/batch/problem-orders?start=2025-01-01&end=2025-01-31&target_type=read
+router.get('/problem-orders', authRequired, adminRequired, async (req, res) => {
+  try {
+    const { start, end, target_type } = req.query
+
+    const query = db('orders')
+      .leftJoin('order_batches', 'order_batches.id', 'orders.batch_id')
+      .leftJoin('account_records', function () {
+        this.on('account_records.order_id', '=', 'orders.id')
+          .andOn('account_records.record_type', '=', db.raw("'order_charge'"))
+      })
+      .where(function () {
+        this.where('orders.order_status', 'failed')
+          .orWhere(function () {
+            this.where('orders.order_status', 'pending')
+              .whereNull('orders.external_task_id')
+          })
+      })
+
+    // 时间筛选
+    if (start) query.where('orders.created_at', '>=', `${start} 00:00:00`)
+    if (end) query.where('orders.created_at', '<=', `${end} 23:59:59`)
+    // 类型筛选
+    if (target_type) query.where('orders.target_type', target_type)
+
+    const orders = await query
+      .select(
+        'orders.id', 'orders.order_no', 'orders.note_url', 'orders.target_type',
+        'orders.ordered_quantity', 'orders.completed_quantity', 'orders.order_status',
+        'orders.reason_message', 'orders.created_at',
+        'order_batches.batch_no',
+        'account_records.actual_paid_amount'
+      )
+      .orderBy('orders.created_at', 'desc')
+      .limit(5000)
+
+    res.json({ code: 0, data: orders })
+  } catch (err) {
+    console.error('[batch/problem-orders]', err.message)
+    res.status(500).json({ code: 500, message: err.message })
+  }
+})
+
+// ========== 批次手动验证快照 ==========
+
+// POST /api/batch/:id/verify
+// 1. 手动验证当前批次可验证订单
+// 2. 验证快照，达标则标记完成；手动验证不创建补单
+// 3. 更新批次状态
+router.post('/:id/verify', authRequired, async (req, res) => {
+  try {
+    const batchId = Number(req.params.id)
+    const roles = req.user.roles || []
+    const isAdmin = roles.includes('admin') || roles.includes('super')
+    if (!isAdmin) return res.status(403).json({ code: 403, message: '仅管理员可操作' })
+
+    const batch = await db('order_batches').where({ id: batchId }).first()
+    if (!batch) return res.status(404).json({ code: 404, message: '批次不存在' })
+
+    const { fetchNoteCounts, fetchNoteId } = await import('../services/noteApi.js')
+
+    let verified = 0
+    let completedCount = 0
+
+    // ---- 第一步：手动「获取快照」——处理订单快照、更新完成进度，但绝不创建补单 ----
+    // 适用范围：派单失败 / 未派发 / 无上游 / 进行中等订单都可手动获取快照。
+    // 排除「已完成」：已完成订单由后端自动验证处理；且只有「已派发到上游且上游已完成」的订单
+    //   才可能进入补单（唯一来源，见 verifyScheduler）。手动验证若碰已完成单会写 last_verified_at
+    //   抢先于自动验证，破坏补单流程，故排除。
+    const verifyOrders = await db('orders')
+      .where({ batch_id: batchId })
+      .whereNotIn('order_status', ['refunded', 'refunding', 'cancelled', 'completed'])
+      .whereNot('target_type', 'impression')
+
+    for (const order of verifyOrders) {
+      try {
+        // 如果有 note_url 但没有 note_id，先解析
+        let noteId = order.note_id
+        if (!noteId && order.note_url) {
+          noteId = await fetchNoteId(order.note_url)
+          if (noteId) {
+            await db('orders').where({ id: order.id }).update({ note_id: noteId, updated_at: new Date() })
+          }
+        }
+        if (!noteId) continue
+
+        // 按数据源拿全量快照：realtime=/realtime，pgy=/pgy
+        const counts = await fetchNoteCounts(noteId, order.data_source || 'realtime')
+        const payload = counts.payload
+
+        // 按类型取对应的指标：viewNum / likedCount / collectCount / commentCount / shareCount
+        const countMap = {
+          read: counts.view_count,
+          view: counts.view_count,
+          like: counts.like_count,
+          collect: counts.collect_count,
+          comment: counts.comment_count,
+          share: counts.share_count
+        }
+        const currentCount = countMap[order.target_type] ?? null
+
+        // 真的取不到 → 标记已验证但无快照，清掉旧验证数据
+        if (currentCount == null) {
+          await db('orders').where({ id: order.id }).update({
+            last_verified_at: new Date(),
+            order_status: 'processing',
+            completed_quantity: 0,
+            snapshot_verified_read_count: null,
+            snapshot_verified_read_payload: null,
+            snapshot_verified_like_count: null,
+            snapshot_verified_like_payload: null,
+            updated_at: new Date()
+          })
+          verified++
+          console.log(`[batch/verify] ${order.order_no} 类型=${order.target_type} 获取不到快照数据`)
+          continue
+        }
+
+        const updateData = {
+          last_verified_at: new Date(),
+          updated_at: new Date()
+        }
+
+        let initialCount
+        if (order.target_type === 'like') {
+          updateData.snapshot_verified_like_count = currentCount
+          if (payload) updateData.snapshot_verified_like_payload = JSON.stringify(payload).slice(0, 8000)
+          initialCount = parseFloat(order.like_count) || 0
+        } else {
+          updateData.snapshot_verified_read_count = currentCount
+          if (payload) updateData.snapshot_verified_read_payload = JSON.stringify(payload).slice(0, 8000)
+          initialCount = parseFloat(order.snapshot_current_read_count) || 0
+        }
+
+        // 增量 = 当前快照 - 下单时快照，记录为完成数
+        const gain = Math.max(0, currentCount - initialCount)
+        updateData.completed_quantity = Math.min(gain, order.ordered_quantity)
+
+        const target = initialCount + (order.ordered_quantity || 0)
+        if (currentCount >= target) {
+          updateData.order_status = 'completed'
+          completedCount++
+          console.log(`[batch/verify] ${order.order_no} 达标: ${currentCount} >= ${target}, 完成=${gain}`)
+        } else {
+          updateData.order_status = 'processing'
+          console.log(`[batch/verify] ${order.order_no} 未达标: ${currentCount} < ${target} (增量=${gain}, 差${target - currentCount})`)
+        }
+
+        await db('orders').where({ id: order.id }).update(updateData)
+
+        verified++
+      } catch (err) {
+        console.warn(`[batch/verify] order ${order.id} 验证失败:`, err.message)
+      }
+    }
+
+    // ---- 第三步：更新批次状态 ----
+    const allOrders = await db('orders').where({ batch_id: batchId })
+    const totalCount = allOrders.length
+    const allCompleted = allOrders.every(o => ['completed', 'refunded'].includes(o.order_status))
+    const pendingCount = allOrders.filter(o => o.order_status === 'pending').length
+    const processingCount = allOrders.filter(o => ['running', 'processing'].includes(o.order_status)).length
+    const succeededCount = allOrders.filter(o => o.order_status === 'completed').length
+    const failedCount = allOrders.filter(o => o.order_status === 'failed').length
+
+    if (allCompleted && totalCount > 0) {
+      await db('order_batches').where({ id: batchId }).update({
+        status: 'completed',
+        pending_count: pendingCount,
+        processing_count: processingCount,
+        succeeded_count: succeededCount,
+        failed_count: failedCount,
+        updated_at: new Date()
+      })
+    } else {
+      await db('order_batches').where({ id: batchId }).update({
+        status: 'processing',
+        pending_count: pendingCount,
+        processing_count: processingCount,
+        succeeded_count: succeededCount,
+        failed_count: failedCount,
+        updated_at: new Date()
+      })
+    }
+
+    const parts = []
+    if (completedCount > 0) parts.push(`${completedCount} 条达标`)
+    if (verified - completedCount > 0) parts.push(`${verified - completedCount} 条未达标`)
+    if (parts.length === 0) parts.push('没有可验证的订单')
+
+    res.json({
+      code: 0,
+      message: allCompleted
+        ? `全部 ${totalCount} 条订单已完成，批次已标记完成`
+        : `${parts.join('，')}，批次处理中`,
+      dispatched: 0,
+      verified,
+      completed: completedCount,
+      batchStatus: allCompleted ? 'completed' : 'processing'
+    })
+  } catch (err) {
+    console.error('[batch/verify]', err.message)
     res.status(500).json({ code: 500, message: err.message })
   }
 })

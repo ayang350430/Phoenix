@@ -109,17 +109,32 @@ const AgentPrice = {
 
   /**
    * 解析某用户某商品的实际价格
-   * 优先级：user_prices > agent_prices > product.unit_price
+   * 管理员/代理 → 底价
+   * 代理下级 → 代理设置的售价（user_prices 优先，其次 agent_prices）
+   * 无上级 → 底价
    */
   async resolvePrice(userId, productId, basePrice) {
     await ensureTable()
 
-    // 1. 是否有单用户定制价
+    // 1. 管理员 → 底价
+    const isAdmin = await this._isAdmin(userId)
+    if (isAdmin) return parseFloat(basePrice)
+
+    // 2. 代理 → 用自己设的售价，未设则用底价
+    const isAgent = await this._isAgent(userId)
+    if (isAgent) {
+      const ownPrice = await db('agent_prices')
+        .where({ agent_id: userId, product_id: productId }).first()
+      if (ownPrice) return parseFloat(ownPrice.sell_price)
+      return parseFloat(basePrice)
+    }
+
+    // 3. 普通用户：先查单用户定制价
     const userPrice = await db('user_prices')
       .where({ user_id: userId, product_id: productId }).first()
     if (userPrice) return parseFloat(userPrice.sell_price)
 
-    // 2. 是否有代理默认售价（通过 referred_by 找代理）
+    // 4. 普通用户：查上级代理的售价
     const user = await db('users').where({ id: userId }).select('referred_by').first()
     if (user?.referred_by) {
       const agentPrice = await db('agent_prices')
@@ -127,7 +142,7 @@ const AgentPrice = {
       if (agentPrice) return parseFloat(agentPrice.sell_price)
     }
 
-    // 3. 回退到商品底价
+    // 5. 回退到商品底价
     return parseFloat(basePrice)
   },
 
@@ -140,34 +155,74 @@ const AgentPrice = {
     const productIds = products.map(p => p.id)
     const result = {}
 
-    // 1. 批量查用户定制价
+    // 0. 管理员 → 全部用底价
+    const isAdmin = await this._isAdmin(userId)
+    if (isAdmin) {
+      for (const p of products) result[p.id] = parseFloat(p.unit_price)
+      return result
+    }
+
+    // 1. 代理 → 自己设的售价，未设则底价
+    const isAgent = await this._isAgent(userId)
+    if (isAgent) {
+      const ownPrices = await db('agent_prices')
+        .where({ agent_id: userId })
+        .whereIn('product_id', productIds)
+      const ownPriceMap = new Map(ownPrices.map(r => [r.product_id, parseFloat(r.sell_price)]))
+      for (const p of products) {
+        result[p.id] = ownPriceMap.get(p.id) ?? parseFloat(p.unit_price)
+      }
+      return result
+    }
+
+    // 2. 普通用户：查定制价
     const userPrices = await db('user_prices')
       .where({ user_id: userId })
       .whereIn('product_id', productIds)
     const userPriceMap = new Map(userPrices.map(r => [r.product_id, parseFloat(r.sell_price)]))
 
-    // 2. 查代理默认售价
+    // 3. 普通用户：查上级代理售价
     const user = await db('users').where({ id: userId }).select('referred_by').first()
-    let agentPriceMap = new Map()
+    let referrerPriceMap = new Map()
     if (user?.referred_by) {
       const agentPrices = await db('agent_prices')
         .where({ agent_id: user.referred_by })
         .whereIn('product_id', productIds)
-      agentPriceMap = new Map(agentPrices.map(r => [r.product_id, parseFloat(r.sell_price)]))
+      referrerPriceMap = new Map(agentPrices.map(r => [r.product_id, parseFloat(r.sell_price)]))
     }
 
-    // 3. 解析
+    // 4. 解析
     for (const p of products) {
       if (userPriceMap.has(p.id)) {
         result[p.id] = userPriceMap.get(p.id)
-      } else if (agentPriceMap.has(p.id)) {
-        result[p.id] = agentPriceMap.get(p.id)
+      } else if (referrerPriceMap.has(p.id)) {
+        result[p.id] = referrerPriceMap.get(p.id)
       } else {
         result[p.id] = parseFloat(p.unit_price)
       }
     }
 
     return result
+  },
+
+  /** 检查用户是否为管理员 */
+  async _isAdmin(userId) {
+    const role = await db('user_roles')
+      .join('roles', 'roles.id', 'user_roles.role_id')
+      .where({ 'user_roles.user_id': userId })
+      .whereIn('roles.code', ['admin', 'super'])
+      .first()
+    return !!role
+  },
+
+  /** 检查用户是否拥有代理角色 */
+  async _isAgent(userId) {
+    const role = await db('user_roles')
+      .join('roles', 'roles.id', 'user_roles.role_id')
+      .where({ 'user_roles.user_id': userId })
+      .whereIn('roles.code', ['agent'])
+      .first()
+    return !!role
   }
 }
 

@@ -37,7 +37,7 @@ async function request(method, url, body, retries = 2) {
       const json = await res.json()
       console.log(`[xhsApi] 响应 ${res.status}:`, JSON.stringify(json))
 
-      if (!res.ok) {
+      if (res.status >= 500) {
         throw new Error(`HTTP ${res.status}: ${JSON.stringify(json)}`)
       }
       return json

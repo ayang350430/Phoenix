@@ -32,7 +32,8 @@ router.post('/create', authRequired, async (req, res) => {
 
     // 回调地址用公网地址（部署后配 NOTIFY_BASE_URL），跳转用前端地址
     const notifyUrl = `${config.notifyBaseUrl}/api/recharge/callback`
-    const redirectUrl = `${config.frontendUrl}/dashboard?recharge=success`
+    // 重定向带上 recharge 参数：支付返回后前端据此识别并轮询，跨域重定向也能带回
+    const redirectUrl = `${config.frontendUrl}/dashboard?recharge=${encodeURIComponent(merchantOrderId)}`
 
     // 调用 TinyDataPay 创建订单
     const payResult = await createPayment({
@@ -176,14 +177,15 @@ router.get('/callback', async (req, res) => {
  */
 router.get('/status', authRequired, async (req, res) => {
   try {
-    const { order_no } = req.query
-    if (!order_no) {
+    const { order_no, merchant_order_id } = req.query
+    if (!order_no && !merchant_order_id) {
       return res.status(400).json({ code: 400, message: '缺少 order_no' })
     }
 
-    // 先查本地
+    // 先查本地（支持按 order_no 或 merchant_order_id 查询）
+    const lookup = order_no ? { order_no } : { merchant_order_id }
     const order = await db('recharge_orders')
-      .where({ order_no, user_id: req.user.id })
+      .where({ ...lookup, user_id: req.user.id })
       .first()
 
     if (!order) {
@@ -197,7 +199,7 @@ router.get('/status', authRequired, async (req, res) => {
 
     // 否则主动查询 TinyDataPay
     try {
-      const remote = await queryPayment(order_no)
+      const remote = await queryPayment(order.order_no)
       if (remote.status === 'paid' && order.status !== 'paid') {
         await db.transaction(async (trx) => {
           // 原子更新：只有 status='pending' 的记录才会被更新
@@ -242,7 +244,8 @@ router.get('/status', authRequired, async (req, res) => {
         await db('recharge_orders').where({ id: order.id }).update({ status: remote.status, updated_at: new Date() })
       }
       return res.json({ code: 0, data: { status: remote.status, amount: order.amount } })
-    } catch {
+    } catch (queryErr) {
+      console.error('[RECHARGE STATUS] 查询 TinyDataPay 失败:', queryErr.message)
       // 查询失败则返回本地状态
       return res.json({ code: 0, data: { status: order.status, amount: order.amount } })
     }

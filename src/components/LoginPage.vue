@@ -1,5 +1,12 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
+import { ElButton, ElForm, ElFormItem, ElInput, ElIcon, ElCheckbox } from 'element-plus'
+import 'element-plus/es/components/button/style/css'
+import 'element-plus/es/components/form/style/css'
+import 'element-plus/es/components/form-item/style/css'
+import 'element-plus/es/components/input/style/css'
+import 'element-plus/es/components/icon/style/css'
+import 'element-plus/es/components/checkbox/style/css'
 import { ArrowRight, Hide, Lock, Message, User, View } from '@element-plus/icons-vue'
 import { useI18n } from '../i18n'
 import logoSvg from '../assets/logo.svg'

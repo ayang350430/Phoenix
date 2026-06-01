@@ -1,0 +1,31 @@
+[
+  {
+    "url": "http://xhslink.com/o/2YBRxspyYzm",
+    "resolved_url": "https://www.xiaohongshu.com/explore/6a15176e0000000007028917",
+    "type": "note",
+    "crawled_at": "2026-05-29T07:04:11.551Z",
+    "method": "fetch",
+    "data": {
+      "note_id": "null",
+      "title": null,
+      "desc": null,
+      "type": null,
+      "created_at": null,
+      "author": {
+        "id": null,
+        "name": null,
+        "avatar": null
+      },
+      "stats": {
+        "likes": null,
+        "comments": null,
+        "collects": null,
+        "shares": null
+      },
+      "tags": [],
+      "images": [],
+      "video": null
+    },
+    "error": null
+  }
+]

@@ -39,6 +39,12 @@ async function ensureTable() {
     await db('products').where({ target_type: 'like' }).update({ api_endpoint: '/api/v2/note_likes' })
     await db('products').whereIn('target_type', ['read', 'view']).update({ api_endpoint: '/api/v2/note_views' })
   }
+  // 自动添加 data_source 列：realtime=实时 pgy=蒲公英（由另一项目上架时写入）
+  if (!(await db.schema.hasColumn('products', 'data_source'))) {
+    await db.schema.alterTable('products', t => {
+      t.string('data_source', 20).notNullable().defaultTo('realtime').comment('快照数据源 realtime=实时 pgy=蒲公英')
+    })
+  }
   tableReady = true
 }
 
@@ -82,7 +88,8 @@ const Product = {
       icon: data.icon || '',
       color: data.color || '',
       sort_order: data.sort_order || 0,
-      api_endpoint: data.api_endpoint || null
+      api_endpoint: data.api_endpoint || null,
+      data_source: ['realtime', 'pgy', 'both'].includes(data.data_source) ? data.data_source : 'realtime'
     })
     return id
   },
@@ -91,7 +98,7 @@ const Product = {
   async update(id, data) {
     await ensureTable()
     const allowed = ['name', 'target_type', 'unit_price', 'min_quantity', 'max_quantity',
-      'step_quantity', 'status', 'description', 'icon', 'color', 'sort_order', 'api_endpoint']
+      'step_quantity', 'status', 'description', 'icon', 'color', 'sort_order', 'api_endpoint', 'data_source']
     const fields = {}
     for (const k of allowed) {
       if (data[k] !== undefined) fields[k] = data[k]

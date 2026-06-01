@@ -144,9 +144,13 @@ router.get('/account-records', async (req, res) => {
 
 // ========== 补单记录 ==========
 
-// GET /api/tasks/supplements — 补单申请记录
+// GET /api/tasks/supplements — 补单申请记录（仅管理员）
 router.get('/supplements', async (req, res) => {
   try {
+    const roles = req.user.roles || []
+    if (!roles.includes('admin') && !roles.includes('super')) {
+      return res.status(403).json({ code: 403, message: '无权访问' })
+    }
     const userIds = await User.getVisibleUserIds(req.user)
     const { page = 1, pageSize = 10, status, order_no } = req.query
     const result = await Task.listReplenishments({
@@ -162,9 +166,13 @@ router.get('/supplements', async (req, res) => {
   }
 })
 
-// GET /api/tasks/supplements/by-batch — 按批次分组的补单记录
+// GET /api/tasks/supplements/by-batch — 按批次分组的补单记录（仅管理员）
 router.get('/supplements/by-batch', async (req, res) => {
   try {
+    const roles = req.user.roles || []
+    if (!roles.includes('admin') && !roles.includes('super')) {
+      return res.status(403).json({ code: 403, message: '无权访问' })
+    }
     const userIds = await User.getVisibleUserIds(req.user)
     const { page = 1, pageSize = 10, status } = req.query
     const offset = (Number(page) - 1) * Number(pageSize)
@@ -230,9 +238,13 @@ router.get('/supplements/by-batch', async (req, res) => {
   }
 })
 
-// GET /api/tasks/supplements/batch/:batchId — 某批次下的补单明细
+// GET /api/tasks/supplements/batch/:batchId — 某批次下的补单明细（仅管理员）
 router.get('/supplements/batch/:batchId', async (req, res) => {
   try {
+    const roles = req.user.roles || []
+    if (!roles.includes('admin') && !roles.includes('super')) {
+      return res.status(403).json({ code: 403, message: '无权访问' })
+    }
     const userIds = await User.getVisibleUserIds(req.user)
     const batchId = Number(req.params.batchId)
 
@@ -275,138 +287,75 @@ router.get('/dashboard', async (req, res) => {
   try {
     const userIds = await User.getVisibleUserIds(req.user)
     const myId = req.user.id
-
-    // 1. 统计数据（按权限看全局或个人）
-    const stats = await Task.getStats(userIds)
-
-    // 2. 通知 — 动态生成
-    const notifications = []
     const roles = req.user.roles || []
     const isAdmin = roles.includes('admin') || roles.includes('super')
 
-    // 2a. 充值成功通知（本人）
-    const recharges = await db('account_records')
-      .where({ user_id: myId, record_type: 'recharge' })
-      .orderBy('created_at', 'desc')
-      .limit(5)
+    // 所有查询并行执行
+    const [
+      stats,
+      recharges,
+      doneOrders,
+      doneBatches,
+      pendingReps,
+      adminAdj,
+      recentOrders,
+      recentRecords,
+      recentBatches,
+      dailyStats,
+      commissions
+    ] = await Promise.all([
+      Task.getStats(userIds),
+      db('account_records').where({ user_id: myId, record_type: 'recharge' }).orderBy('created_at', 'desc').limit(5),
+      isAdmin ? db('orders').leftJoin('products', 'products.id', 'orders.product_id').where('orders.user_id', myId).whereIn('orders.order_status', ['completed', 'failed']).select('orders.*', 'products.name as product_name').orderBy('orders.updated_at', 'desc').limit(5) : Promise.resolve([]),
+      isAdmin
+        ? db('order_batches').where({ user_id: myId }).whereIn('status', ['completed', 'partial_completed', 'failed']).orderBy('updated_at', 'desc').limit(3)
+        : db('order_batches').where({ user_id: myId }).orderBy('created_at', 'desc').limit(5),
+      isAdmin ? db('order_replenishment_records as r').leftJoin('users', 'r.user_id', 'users.id').whereIn('r.status', ['pending', 'created']).select('r.*', 'users.username').orderBy('r.created_at', 'desc').limit(5) : Promise.resolve([]),
+      db('account_records').where({ user_id: myId }).whereIn('record_type', ['admin_add', 'admin_deduct']).orderBy('created_at', 'desc').limit(3),
+      Task.listOrders({ userIds, page: 1, pageSize: 5 }),
+      Task.listAccountRecords({ userIds, page: 1, pageSize: 5 }),
+      Task.listBatches({ userIds, page: 1, pageSize: 5 }),
+      Task.getDailyStats(userIds, 7),
+      db('account_records').where({ user_id: myId, record_type: 'agent_commission' }).orderBy('created_at', 'desc').limit(5)
+    ])
+
+    // 组装通知
+    const notifications = []
     for (const r of recharges) {
-      notifications.push({
-        id: `recharge-${r.id}`,
-        type: 'recharge',
-        title: `充值成功 ¥${parseFloat(r.actual_paid_amount || 0).toFixed(2)}`,
-        desc: `余额 ¥${parseFloat(r.after_available_amount || 0).toFixed(2)}`,
-        time: r.created_at
-      })
+      notifications.push({ id: `recharge-${r.id}`, type: 'recharge', title: `充值成功 ¥${parseFloat(r.actual_paid_amount || 0).toFixed(2)}`, desc: `余额 ¥${parseFloat(r.after_available_amount || 0).toFixed(2)}`, time: r.created_at })
     }
-
-    // 2b. 订单完成/失败通知（本人）
-    const doneOrders = await db('orders')
-      .leftJoin('products', 'products.id', 'orders.product_id')
-      .where('orders.user_id', myId)
-      .whereIn('orders.order_status', ['completed', 'failed'])
-      .select('orders.*', 'products.name as product_name')
-      .orderBy('orders.updated_at', 'desc')
-      .limit(5)
-    for (const o of doneOrders) {
-      const ok = o.order_status === 'completed'
-      const typeName = o.product_name
-        ? o.product_name.replace(/^小红书/, '')
-        : (typeLabels[o.target_type] || o.target_type)
-      notifications.push({
-        id: `order-${o.id}`,
-        type: ok ? 'order_ok' : 'order_fail',
-        title: `${ok ? '订单完成' : '订单失败'} ${o.order_no}`,
-        desc: `${typeName} · ${o.completed_quantity || 0}/${o.ordered_quantity}`,
-        time: o.updated_at
-      })
-    }
-
-    // 2c. 批次完成通知（本人）
-    const doneBatches = await db('order_batches')
-      .where({ user_id: myId })
-      .whereIn('status', ['completed', 'partial_completed', 'failed'])
-      .orderBy('updated_at', 'desc')
-      .limit(3)
-    for (const b of doneBatches) {
-      const label = b.status === 'completed' ? '批次完成' : b.status === 'failed' ? '批次失败' : '批次部分完成'
-      notifications.push({
-        id: `batch-${b.id}`,
-        type: b.status === 'completed' ? 'batch_ok' : 'batch_fail',
-        title: `${label} ${b.batch_no}`,
-        desc: `成功 ${b.succeeded_count || 0} / 失败 ${b.failed_count || 0}`,
-        time: b.updated_at
-      })
-    }
-
-    // 2d. 管理员：补单申请待审核
     if (isAdmin) {
-      const pendingReps = await db('order_replenishment_records as r')
-        .leftJoin('users', 'r.user_id', 'users.id')
-        .whereIn('r.status', ['pending', 'created'])
-        .select('r.*', 'users.username')
-        .orderBy('r.created_at', 'desc')
-        .limit(5)
-      for (const r of pendingReps) {
-        notifications.push({
-          id: `rep-${r.id}`,
-          type: 'admin_supplement',
-          title: `补单申请待审核`,
-          desc: `${r.username || ''} · ${r.order_no} · 差额 ${r.shortage_quantity}`,
-          time: r.created_at
-        })
+      for (const o of doneOrders) {
+        const ok = o.order_status === 'completed'
+        const typeName = o.product_name ? o.product_name.replace(/^小红书/, '') : (typeLabels[o.target_type] || o.target_type)
+        notifications.push({ id: `order-${o.id}`, type: ok ? 'order_ok' : 'order_fail', title: `${ok ? '订单完成' : '订单失败'} ${o.order_no}`, desc: `${typeName} · ${o.completed_quantity || 0}/${o.ordered_quantity}`, time: o.updated_at })
+      }
+      for (const b of doneBatches) {
+        const label = b.status === 'completed' ? '批次完成' : b.status === 'failed' ? '批次失败' : '批次部分完成'
+        notifications.push({ id: `batch-${b.id}`, type: b.status === 'completed' ? 'batch_ok' : 'batch_fail', title: `${label} ${b.batch_no}`, desc: `成功 ${b.succeeded_count || 0} / 失败 ${b.failed_count || 0}`, time: b.updated_at })
+      }
+    } else {
+      for (const b of doneBatches) {
+        notifications.push({ id: `batch-${b.id}`, type: 'batch_ok', title: `已提交批次 ${b.batch_no}`, desc: `共 ${b.order_count || 0} 个订单`, time: b.created_at })
       }
     }
-
-    // 2e. 管理员余额调整通知
-    const adminAdj = await db('account_records')
-      .where({ user_id: myId })
-      .whereIn('record_type', ['admin_add', 'admin_deduct'])
-      .orderBy('created_at', 'desc')
-      .limit(3)
+    for (const r of pendingReps) {
+      notifications.push({ id: `rep-${r.id}`, type: 'admin_supplement', title: `补单申请待审核`, desc: `${r.username || ''} · ${r.order_no} · 差额 ${r.shortage_quantity}`, time: r.created_at })
+    }
     for (const r of adminAdj) {
       const isAdd = r.record_type === 'admin_add'
-      notifications.push({
-        id: `adj-${r.id}`,
-        type: isAdd ? 'recharge' : 'order_fail',
-        title: `管理员${isAdd ? '加款' : '扣款'} ¥${parseFloat(r.actual_paid_amount || 0).toFixed(2)}`,
-        desc: r.reason_message || '',
-        time: r.created_at
-      })
+      notifications.push({ id: `adj-${r.id}`, type: isAdd ? 'recharge' : 'order_fail', title: `管理员${isAdd ? '加款' : '扣款'} ¥${parseFloat(r.actual_paid_amount || 0).toFixed(2)}`, desc: r.reason_message || '', time: r.created_at })
     }
-
-    // 按时间排序，取最新15条
+    for (const r of commissions) {
+      notifications.push({ id: `comm-${r.id}`, type: 'recharge', title: `下级下单分润 +¥${parseFloat(r.net_amount || 0).toFixed(2)}`, desc: `余额 ¥${parseFloat(r.after_available_amount || 0).toFixed(2)}`, time: r.created_at })
+    }
     notifications.sort((a, b) => new Date(b.time) - new Date(a.time))
-    const finalNotifications = notifications.slice(0, 15)
-
-    // 3. 最近订单（按权限）
-    const recentOrders = await Task.listOrders({
-      userIds,
-      page: 1,
-      pageSize: 5
-    })
-
-    // 4. 最近账务记录（按权限）
-    const recentRecords = await Task.listAccountRecords({
-      userIds,
-      page: 1,
-      pageSize: 5
-    })
-
-    // 5. 最近批次（按权限）
-    const recentBatches = await Task.listBatches({
-      userIds,
-      page: 1,
-      pageSize: 5
-    })
-
-    // 6. 每日订单趋势（最近7天）
-    const dailyStats = await Task.getDailyStats(userIds, 7)
 
     res.json({
       code: 0,
       data: {
         stats,
-        notifications: finalNotifications,
+        notifications: notifications.slice(0, 15),
         recent_orders: recentOrders.rows,
         recent_records: recentRecords.rows,
         recent_batches: recentBatches.rows,

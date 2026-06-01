@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { authRequired, roleRequired } from '../middleware/auth.js'
 import { cancelTask } from '../services/xhsApi.js'
+import { clawbackAgentCommission } from '../services/agentCommission.js'
 import db from '../db.js'
 
 const router = Router()
@@ -38,7 +39,7 @@ async function ensureTable() {
 // GET /api/refund/check/:batchId — 用户检查批次/订单的待处理退款
 router.get('/check/:batchId', authRequired, async (req, res) => {
   await ensureTable()
-  try {
+  try {    
     const batchId = Number(req.params.batchId)
     // 批次级别检查
     const batchPending = await db('refund_requests')
@@ -53,10 +54,10 @@ router.get('/check/:batchId', authRequired, async (req, res) => {
   } catch {
     res.json({ code: 0, data: { pending: false, pendingOrderIds: [] } })
   }
-})
+})        
 
 // GET /api/refund — 退款申请列表
-router.get('/', authRequired, roleRequired('admin', 'agent'), async (req, res) => {
+router.get('/', authRequired, roleRequired('admin'), async (req, res) => {
   await ensureTable()
   try {
     const roles = req.user.roles || []
@@ -165,11 +166,14 @@ async function refundSingleOrder(trx, order, userId, ts, idx, fullRefund = false
     available_amount: afterBal, updated_at: now
   })
 
+  // 退款 → 扣回已划给上级代理的分润
+  await clawbackAgentCommission(trx, order, refundQty)
+
   return refundAmount
 }
 
 // PUT /api/refund/:id/approve — 审批通过
-router.put('/:id/approve', authRequired, roleRequired('admin', 'agent'), async (req, res) => {
+router.put('/:id/approve', authRequired, roleRequired('admin'), async (req, res) => {
   await ensureTable()
   const trx = await db.transaction()
   try {
@@ -251,7 +255,7 @@ router.put('/:id/approve', authRequired, roleRequired('admin', 'agent'), async (
 })
 
 // PUT /api/refund/approve-all — 一键同意所有待处理退款
-router.put('/approve-all', authRequired, roleRequired('admin', 'agent'), async (req, res) => {
+router.put('/approve-all', authRequired, roleRequired('admin'), async (req, res) => {
   await ensureTable()
   try {
     const roles = req.user.roles || []
@@ -332,7 +336,7 @@ router.put('/approve-all', authRequired, roleRequired('admin', 'agent'), async (
 })
 
 // PUT /api/refund/:id/reject — 驳回
-router.put('/:id/reject', authRequired, roleRequired('admin', 'agent'), async (req, res) => {
+router.put('/:id/reject', authRequired, roleRequired('admin'), async (req, res) => {
   await ensureTable()
   try {
     const requestId = Number(req.params.id)

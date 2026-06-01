@@ -80,9 +80,17 @@ function scrollBottom() {
 function toggleChat() {
   open.value = !open.value
   if (open.value) {
+    // 每次打开都清空历史，显示常见问题
+    messages.value = []
+    liveMode.value = false
+    lastMsgId.value = 0
+    localId = -1
+    stopPolling()
     hasUnread.value = false
     showEmoji.value = false
     scrollBottom()
+  } else {
+    stopPolling()
   }
 }
 
@@ -527,31 +535,7 @@ onMounted(async () => {
     }
   } catch { /* ignore */ }
 
-  // 检查是否有已存在的后端会话，自动进入人工模式
-  try {
-    const res = await fetch('/api/chat/messages', {
-      headers: { Authorization: `Bearer ${getToken()}` }
-    })
-    const data = await res.json()
-    if (data.code === 0 && data.data.messages.length > 0) {
-      liveMode.value = true
-      for (const msg of data.data.messages) {
-        messages.value.push({
-          id: msg.id,
-          role: msg.sender_role === 'user' ? 'user' : 'bot',
-          type: msg.type,
-          text: msg.type === 'text' ? String(msg.content ?? '') : undefined,
-          src: (msg.type === 'image' || msg.type === 'audio') ? msg.content : undefined,
-          _playing: false, _dur: 0
-        })
-      }
-      if (data.data.messages.length > 0) {
-        lastMsgId.value = Math.max(...data.data.messages.map(m => m.id))
-      }
-      scrollBottom()
-      startPolling()
-    }
-  } catch { /* ignore */ }
+  // 不再自动加载旧会话 —— 每次打开聊天窗口都从常见问题开始
 
   document.addEventListener('click', closeEmojiOnOutside)
 })

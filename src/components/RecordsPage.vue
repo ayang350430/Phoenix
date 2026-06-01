@@ -1,6 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
-import { ElMessageBox, ElMessage } from 'element-plus'
+import { ElMessageBox, ElMessage, ElPagination } from 'element-plus'
+import { getUserOrderStatusDisplay } from '../utils/orderStatusDisplay.js'
 
 // v-click-outside 指令
 const vClickOutside = {
@@ -17,6 +18,8 @@ const vClickOutside = {
 
 const ws = inject('workspace')
 const { getToken, refreshKey, isAdmin, isAgent, fetchBalance } = ws
+const canExportProblemOrders = computed(() => isAdmin.value || isAgent.value)
+const canViewOrderStatus = computed(() => isAdmin.value || isAgent.value)
 
 // ========== 统计 ==========
 const batchTotal = ref(0)
@@ -28,13 +31,14 @@ const totalSpent = ref(0)
 const activeModule = ref('orders')  // 'orders' | 'supplements'
 const showModuleDropdown = ref(false)
 
-const moduleOptions = [
-  { key: 'orders', label: '下单记录' },
-  { key: 'supplements', label: '补单记录' }
-]
+const moduleOptions = computed(() => {
+  const opts = [{ key: 'orders', label: '下单记录' }]
+  if (isAdmin.value) opts.push({ key: 'supplements', label: '补单记录' })
+  return opts
+})
 
 const activeModuleLabel = computed(() =>
-  moduleOptions.find(o => o.key === activeModule.value)?.label || '下单记录'
+  moduleOptions.value.find(o => o.key === activeModule.value)?.label || '下单记录'
 )
 
 function switchModule(key) {
@@ -71,13 +75,25 @@ const statusConf = {
   stopped:            { label: '已停止',   color: '#9aa5b5', bg: '#f6f8fc', border: '#d0d7e2' }
 }
 
-const typeLabels = { read: '阅读', like: '点赞', impression: '曝光', collect: '收藏', comment: '评论' }
+const typeLabels = { read: '阅读', like: '点赞', impression: '曝光', collect: '收藏', test: '测试' }
 
 function sc(s) { return statusConf[s] || statusConf.pending }
 function ft(t) { return typeLabels[t] || t || '其他' }
 function pn(item) {
   if (item.product_name) return item.product_name.replace(/^小红书/, '')
   return ft(item.target_type)
+}
+
+function batchStatusView(batch) {
+  return canViewOrderStatus.value ? sc(batch?.status) : getUserOrderStatusDisplay(batch?.status)
+}
+
+function batchProgressTone(batch) {
+  return canViewOrderStatus.value ? sc(batch?.status).color : 'linear-gradient(90deg, #ec4f8b 0%, #2f6df6 100%)'
+}
+
+function batchBorderTone(batch) {
+  return canViewOrderStatus.value ? sc(batch?.status).border : '#5b8def'
 }
 
 function batchProgress(batch) {
@@ -155,6 +171,34 @@ const showDrawer = ref(false)
 const drawerBatch = ref(null)
 const drawerOrders = ref([])
 const drawerLoading = ref(false)
+const isAnyDrawerOpen = computed(() => showDrawer.value || supDrawerShow.value)
+let scrollLockState = null
+
+function lockPageScroll() {
+  if (scrollLockState) return
+  scrollLockState = {
+    top: window.scrollY,
+    overflow: document.body.style.overflow,
+    position: document.body.style.position,
+    width: document.body.style.width,
+    topStyle: document.body.style.top
+  }
+  document.body.style.overflow = 'hidden'
+  document.body.style.position = 'fixed'
+  document.body.style.width = '100%'
+  document.body.style.top = `-${scrollLockState.top}px`
+}
+
+function unlockPageScroll() {
+  if (!scrollLockState) return
+  const { top, overflow, position, width, topStyle } = scrollLockState
+  document.body.style.overflow = overflow
+  document.body.style.position = position
+  document.body.style.width = width
+  document.body.style.top = topStyle
+  scrollLockState = null
+  window.scrollTo(0, top)
+}
 
 async function openBatchDrawer(batch) {
   drawerBatch.value = batch
@@ -190,6 +234,18 @@ const orderStatusConf = {
 }
 
 function osc(s) { return orderStatusConf[s] || { label: s || '未知', color: '#9aa5b5' } }
+
+function orderStatusView(order) {
+  return canViewOrderStatus.value ? osc(order?.order_status) : getUserOrderStatusDisplay(order?.order_status)
+}
+
+function orderProgressTone(order) {
+  return canViewOrderStatus.value ? osc(order?.order_status).color : 'linear-gradient(90deg, #ec4f8b 0%, #2f6df6 100%)'
+}
+
+function orderProgressTextColor(order) {
+  return canViewOrderStatus.value ? osc(order?.order_status).color : '#5b8def'
+}
 
 // ========== 退款 ==========
 const refunding = ref(false)
@@ -237,6 +293,39 @@ async function checkPendingRefund(batchId) {
       pendingOrderIds.value = data.data.pendingOrderIds || []
     }
   } catch { /* ignore */ }
+}
+
+// ========== 批次验证快照 ==========
+const verifyingBatch = ref(false)
+
+async function verifyBatchSnapshot() {
+  if (verifyingBatch.value || !drawerBatch.value) return
+  verifyingBatch.value = true
+  try {
+    const res = await fetch(`/api/batch/${drawerBatch.value.id}/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` }
+    })
+    const data = await res.json()
+    if (data.code === 0) {
+      showToast(data.message || '验证完成')
+      // 刷新订单列表
+      const res2 = await fetch(`/api/batch/${drawerBatch.value.id}/orders`, {
+        headers: { Authorization: `Bearer ${getToken()}` }
+      })
+      const d2 = await res2.json()
+      if (d2.code === 0) drawerOrders.value = d2.data.orders || []
+      await fetchBatches()
+      const refreshed = batches.value.find(b => b.id === drawerBatch.value.id)
+      if (refreshed) drawerBatch.value = refreshed
+    } else {
+      showToast(data.message || '验证失败')
+    }
+  } catch {
+    showToast('验证失败')
+  } finally {
+    verifyingBatch.value = false
+  }
 }
 
 function requestBatchRefund() {
@@ -341,12 +430,94 @@ async function requestSupplement(order) {
  */
 function getVerifyInfo(order) {
   if (!order.last_verified_at) return null
+  // 只有这些类型支持快照验证
+  const supported = ['read', 'view', 'like', 'collect', 'comment', 'share']
+  if (!supported.includes(order.target_type)) {
+    return { unavailable: true }
+  }
   const isLike = order.target_type === 'like'
   const baseLine = isLike ? (order.like_count ?? 0) : (order.snapshot_current_read_count ?? 0)
   const verified = isLike ? (order.snapshot_verified_like_count ?? 0) : (order.snapshot_verified_read_count ?? 0)
   const gain = Math.max(0, verified - baseLine)
   const shortage = Math.max(0, order.ordered_quantity - gain)
   return { baseLine, verified, gain, shortage, pass: shortage <= 0 }
+}
+
+// ========== 商品类型列表（动态） ==========
+const productTypes = ref([])
+async function fetchProductTypes() {
+  try {
+    const res = await fetch('/api/products/all', {
+      headers: { Authorization: `Bearer ${getToken()}` }
+    })
+    const data = await res.json()
+    if (data.code === 0 && data.data?.length) {
+      productTypes.value = data.data.map(p => ({ value: p.target_type, label: p.name }))
+    }
+  } catch { /* ignore */ }
+}
+
+// ========== 一键下载问题订单 ==========
+const exportingProblems = ref(false)
+const showExportDialog = ref(false)
+const exportStartDate = ref('')
+const exportEndDate = ref('')
+const exportTargetType = ref('')
+
+function openExportDialog() {
+  const today = new Date().toISOString().slice(0, 10)
+  exportStartDate.value = today
+  exportEndDate.value = today
+  exportTargetType.value = ''
+  if (!productTypes.value.length) fetchProductTypes()
+  showExportDialog.value = true
+}
+
+async function exportProblemOrders() {
+  if (exportingProblems.value) return
+  exportingProblems.value = true
+  showExportDialog.value = false
+  try {
+    const params = new URLSearchParams()
+    if (exportStartDate.value) params.set('start', exportStartDate.value)
+    if (exportEndDate.value) params.set('end', exportEndDate.value)
+    if (exportTargetType.value) params.set('target_type', exportTargetType.value)
+    const res = await fetch(`/api/batch/problem-orders?${params}`, {
+      headers: { Authorization: `Bearer ${getToken()}` }
+    })
+    const data = await res.json()
+    if (data.code !== 0 || !data.data?.length) {
+      showToast('没有问题订单')
+      return
+    }
+    const orders = data.data
+    const BOM = '﻿'
+    const headers = ['订单ID', '订单号', '批次号', '笔记链接', '类型', '下单量', '状态', '失败原因', '付款金额', '创建时间']
+    const rows = orders.map(o => [
+      o.id, o.order_no, o.batch_no || '', o.note_url || '',
+      pn(o), o.ordered_quantity || 0,
+      osc(o.order_status).label,
+      o.reason_message || '',
+      (parseFloat(o.actual_paid_amount) || 0).toFixed(2),
+      fmtTime(o.created_at)
+    ])
+    const csv = BOM + [headers.join(','), ...rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(','))].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const range = [exportStartDate.value, exportEndDate.value].filter(Boolean).join('_')
+    a.download = `问题订单_${range || new Date().toISOString().slice(0, 10)}.csv`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    showToast('导出成功')
+  } catch {
+    showToast('导出失败')
+  } finally {
+    exportingProblems.value = false
+  }
 }
 
 // ========== 导出批次订单 ==========
@@ -426,13 +597,11 @@ function rsc(s) { return repStatusConf[s] || repStatusConf.pending }
 
 function batchApprovableCount(batch) {
   if (isAdmin.value) return (batch.pending_count || 0) + (batch.agent_approved_count || 0)
-  if (isAgent.value) return batch.pending_count || 0
   return 0
 }
 
 function canApproveRecord(r) {
   if (isAdmin.value) return ['pending', 'created', 'agent_approved'].includes(r.status)
-  if (isAgent.value) return ['pending', 'created'].includes(r.status)
   return false
 }
 
@@ -583,7 +752,7 @@ async function approveAllBatch(batch) {
     const records = data.data || []
     const approvable = isAdmin.value
       ? ['pending', 'created', 'agent_approved']
-      : (isAgent.value ? ['pending', 'created'] : [])
+      : []
     const toApprove = records.filter(r => approvable.includes(r.status))
     if (toApprove.length === 0) { ElMessage.info('没有可审批的补单'); return }
     let ok = 0, fail = 0
@@ -614,9 +783,18 @@ watch(refreshKey, () => {
   if (activeModule.value === 'supplements') { supPage.value = 1; fetchSupplements() }
 })
 
+watch(isAnyDrawerOpen, (open) => {
+  if (open) lockPageScroll()
+  else unlockPageScroll()
+})
+
 onMounted(() => {
   fetchStats()
   fetchBatches()
+})
+
+onUnmounted(() => {
+  unlockPageScroll()
 })
 </script>
 
@@ -642,7 +820,7 @@ onMounted(() => {
         </div>
         <strong class="stat-value">{{ orderTotal }}</strong>
       </div>
-      <div class="stat-card card-processing">
+      <div v-if="canViewOrderStatus" class="stat-card card-processing">
         <div class="stat-top">
           <div class="stat-icon icon-processing">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="9"/></svg>
@@ -659,6 +837,43 @@ onMounted(() => {
           <span class="stat-label">累计消费</span>
         </div>
         <strong class="stat-value spent">¥ {{ fmtMoney(totalSpent) }}</strong>
+      </div>
+    </div>
+
+    <!-- 问题订单下载 -->
+    <div v-if="canExportProblemOrders" class="problem-bar">
+      <button type="button" class="problem-btn" :disabled="exportingProblems" @click="openExportDialog">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        {{ exportingProblems ? '导出中...' : '一键下载问题订单' }}
+      </button>
+      <span class="problem-hint">包含失败、无上游、派单未成功的订单</span>
+    </div>
+
+    <!-- 导出问题订单弹窗 -->
+    <div v-if="canExportProblemOrders && showExportDialog" class="export-overlay" @click.self="showExportDialog = false">
+      <div class="export-dialog">
+        <h3 class="export-dialog-title">导出问题订单</h3>
+        <div class="export-field">
+          <label>开始日期</label>
+          <input type="date" v-model="exportStartDate" class="export-input" />
+        </div>
+        <div class="export-field">
+          <label>结束日期</label>
+          <input type="date" v-model="exportEndDate" class="export-input" />
+        </div>
+        <div class="export-field">
+          <label>订单类型</label>
+          <select v-model="exportTargetType" class="export-input">
+            <option value="">全部类型</option>
+            <option v-for="pt in productTypes" :key="pt.value" :value="pt.value">{{ pt.label }}</option>
+          </select>
+        </div>
+        <div class="export-dialog-actions">
+          <button class="export-cancel-btn" @click="showExportDialog = false">取消</button>
+          <button class="export-confirm-btn" :disabled="exportingProblems" @click="exportProblemOrders">
+            {{ exportingProblems ? '导出中...' : '确认导出' }}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -739,7 +954,8 @@ onMounted(() => {
               v-for="batch in batches"
               :key="batch.id"
               class="batch-row"
-              :style="{ '--bdr': sc(batch.status).border, '--prog': batchProgress(batch) + '%', '--prog-color': sc(batch.status).color }"
+              :class="{ 'no-fail-col': !canViewOrderStatus }"
+              :style="{ '--bdr': batchBorderTone(batch), '--prog': batchProgress(batch) + '%', '--prog-color': batchProgressTone(batch) }"
               @click="openBatchDrawer(batch)"
             >
               <div class="batch-progress-bar"></div>
@@ -747,12 +963,13 @@ onMounted(() => {
                 <div class="batch-head">
                   <span class="batch-no">{{ batch.batch_no || batch.batch_id }}</span>
                   <span class="tag type-tag">{{ pn(batch) }}</span>
+                  <span class="tag" :style="batch.data_source === 'pgy' ? 'color:#ee4d7a;background:#fff0f5;border-color:#f8d8e4' : 'color:#18a058;background:#eafaf1;border-color:#b7ebc9'">{{ batch.data_source === 'pgy' ? '蒲公英' : '实时' }}</span>
                   <span class="tag method-tag">确认提交</span>
-                  <span v-if="batch.has_upstream === false" class="tag no-upstream-tag">无上游</span>
+                  <span v-if="canViewOrderStatus && batch.has_upstream === false" class="tag no-upstream-tag">无上游</span>
                 </div>
                 <div class="batch-time">
                   提交时间: {{ fmtTime(batch.created_at) }}
-                  <span v-if="batch.has_upstream === false" class="no-upstream-hint">请下载文件联系客服</span>
+                  <span v-if="canViewOrderStatus && batch.has_upstream === false" class="no-upstream-hint">请下载文件联系客服</span>
                 </div>
                 <!-- 移动端统计网格 -->
                 <div class="mobile-stat-grid">
@@ -764,7 +981,7 @@ onMounted(() => {
                     <span class="msg-label">成功</span>
                     <strong class="msg-val ok">{{ batch.succeeded_count || 0 }}</strong>
                   </div>
-                  <div class="msg-cell">
+                  <div v-if="canViewOrderStatus" class="msg-cell">
                     <span class="msg-label">失败</span>
                     <strong class="msg-val" :class="{ fail: batch.failed_count > 0 }">{{ batch.failed_count || 0 }}</strong>
                   </div>
@@ -782,7 +999,7 @@ onMounted(() => {
                 <span class="stat-lbl">成功</span>
                 <strong>{{ batch.succeeded_count || 0 }}</strong>
               </div>
-              <div class="batch-stat">
+              <div v-if="canViewOrderStatus" class="batch-stat">
                 <span class="stat-lbl">失败</span>
                 <strong>{{ batch.failed_count || 0 }}</strong>
               </div>
@@ -805,12 +1022,12 @@ onMounted(() => {
                   <span
                     class="status-pill"
                     :style="{
-                      color: sc(batch.status).color,
-                      background: sc(batch.status).bg,
-                      borderColor: sc(batch.status).color
+                      color: batchStatusView(batch).color,
+                      background: batchStatusView(batch).bg,
+                      borderColor: batchStatusView(batch).border || batchStatusView(batch).color
                     }"
                     style="margin-left: 6px;"
-                  >{{ sc(batch.status).label }}</span>
+                  >{{ batchStatusView(batch).label }}</span>
                 </div>
                 <svg class="arrow-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
                 <div class="action-amount">
@@ -953,7 +1170,14 @@ onMounted(() => {
                 </div>
                 <div class="dbi-row">
                   <span class="dbi-label">状态</span>
-                  <span class="status-pill small" :style="{ color: sc(drawerBatch.status).color, background: sc(drawerBatch.status).bg, borderColor: sc(drawerBatch.status).color }">{{ sc(drawerBatch.status).label }}</span>
+                  <span
+                    class="status-pill small"
+                    :style="{
+                      color: batchStatusView(drawerBatch).color,
+                      background: batchStatusView(drawerBatch).bg,
+                      borderColor: batchStatusView(drawerBatch).border || batchStatusView(drawerBatch).color
+                    }"
+                  >{{ batchStatusView(drawerBatch).label }}</span>
                 </div>
                 <div class="dbi-row">
                   <span class="dbi-label">提交时间</span>
@@ -968,7 +1192,7 @@ onMounted(() => {
                     <span>成功</span>
                     <strong>{{ drawerBatch.succeeded_count || 0 }}</strong>
                   </div>
-                  <div class="dbi-chip fail">
+                  <div v-if="canViewOrderStatus" class="dbi-chip fail">
                     <span>失败</span>
                     <strong>{{ drawerBatch.failed_count || 0 }}</strong>
                   </div>
@@ -983,11 +1207,24 @@ onMounted(() => {
                 <div class="dbi-progress-bar">
                   <div
                     class="dbi-progress-fill"
-                    :style="{ width: batchProgress(drawerBatch) + '%', background: sc(drawerBatch.status).color }"
+                    :style="{ width: batchProgress(drawerBatch) + '%', background: batchProgressTone(drawerBatch) }"
                   ></div>
                 </div>
                 <span class="dbi-progress-text">{{ batchProgress(drawerBatch) }}%</span>
               </div>
+            </div>
+
+            <!-- 批次操作按钮 -->
+            <div v-if="drawerBatch && canViewOrderStatus" class="drawer-actions-bar">
+              <button
+                type="button"
+                class="verify-batch-btn"
+                :disabled="verifyingBatch"
+                @click="verifyBatchSnapshot"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+                {{ verifyingBatch ? '验证中...' : '验证快照' }}
+              </button>
             </div>
 
             <!-- 移动端拖拽条 -->
@@ -1011,7 +1248,7 @@ onMounted(() => {
                       :disabled="refundingOrderId === order.id"
                       @click.stop="requestOrderRefund(order)"
                     >{{ refundingOrderId === order.id ? '提交中...' : '申请退款' }}</button>
-                    <span class="oc-status" :style="{ color: osc(order.order_status).color }">{{ osc(order.order_status).label }}</span>
+                    <span class="oc-status" :style="{ color: orderStatusView(order).color }">{{ orderStatusView(order).label }}</span>
                   </div>
                   <div class="oc-url">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
@@ -1040,26 +1277,42 @@ onMounted(() => {
                     <div class="oc-progress-bar">
                       <div
                         class="oc-progress-fill"
-                        :style="{ width: orderProgress(order) + '%', background: osc(order.order_status).color }"
+                        :style="{ width: orderProgress(order) + '%', background: orderProgressTone(order) }"
                       ></div>
                     </div>
-                    <span class="oc-progress-text" :style="{ color: osc(order.order_status).color }">{{ orderProgress(order) }}%</span>
+                    <span class="oc-progress-text" :style="{ color: orderProgressTextColor(order) }">{{ orderProgress(order) }}%</span>
+                  </div>
+
+                  <!-- 失败原因 + 联系客服提示 -->
+                  <div v-if="canViewOrderStatus && order.order_status === 'failed' && order.reason_message" class="oc-fail-reason">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                    <span>{{ order.reason_message }}</span>
+                  </div>
+                  <!-- 退款原因 -->
+                  <div v-if="canViewOrderStatus && order.order_status === 'refunded' && order.reason_message" class="oc-fail-reason">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                    <span>{{ order.reason_message }}</span>
                   </div>
 
                   <!-- 没有上游提示 -->
-                  <div v-if="!order.product_api_endpoint && !order.external_task_id" class="oc-no-upstream">
+                  <div v-if="canViewOrderStatus && !order.product_api_endpoint && !order.external_task_id" class="oc-no-upstream">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
                     <span>没有上游，请下载文件联系客服</span>
                   </div>
 
                   <!-- 验证快照结果（后台自动验证） -->
-                  <template v-if="order.target_type !== 'impression'">
+                  <template v-if="canViewOrderStatus && order.target_type !== 'impression'">
+                    <!-- 该类型无快照指标 -->
+                    <div v-if="canViewOrderStatus && getVerifyInfo(order)?.unavailable" class="oc-verify-unavailable">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                      <span>获取不到快照，该类型不支持自动验证</span>
+                    </div>
                     <!-- 已验证：显示结果 -->
-                    <div v-if="getVerifyInfo(order)" class="oc-verify">
+                    <div v-else-if="getVerifyInfo(order) && !getVerifyInfo(order).unavailable" class="oc-verify">
                       <div class="oc-verify-head">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
                         <span>快照验证</span>
-                        <span class="oc-verify-badge" :class="getVerifyInfo(order).pass ? 'pass' : 'fail'">
+                        <span v-if="canViewOrderStatus" class="oc-verify-badge" :class="getVerifyInfo(order).pass ? 'pass' : 'fail'">
                           {{ getVerifyInfo(order).pass ? '达标' : '未达标' }}
                         </span>
                       </div>
@@ -1088,29 +1341,12 @@ onMounted(() => {
                         验证于 {{ fmtTime(order.last_verified_at) }}
                       </div>
 
-                      <!-- 差额 > 0 且未申请补单且批次未退款 → 一键补单 -->
-                      <div v-if="getVerifyInfo(order).shortage > 0 && !order._repRequested && !['refunded','cancelled'].includes(drawerBatch?.status)" class="oc-actions">
-                        <button
-                          type="button"
-                          class="btn-supplement"
-                          :disabled="!!requestingId"
-                          @click.stop="requestSupplement(order)"
-                        >
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                          {{ requestingId === order.id ? '申请中...' : '一键申请补单' }}
-                        </button>
-                      </div>
-                      <div v-if="order._repRequested" class="oc-actions">
-                        <span class="rep-submitted-hint">
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                          已提交补单申请，等待管理员审核
-                        </span>
-                      </div>
+                      <!-- 补单统一在补单记录里由管理员审核处理 -->
                     </div>
 
                     <!-- 未验证但已完成：等待验证提示 -->
                     <div
-                      v-else-if="['completed','partial_completed','failed','stopped'].includes(order.order_status)"
+                      v-else-if="canViewOrderStatus && ['completed','partial_completed','failed','stopped'].includes(order.order_status)"
                       class="oc-verify-pending"
                     >
                       <div class="spinner-sm"></div>
@@ -1244,6 +1480,80 @@ onMounted(() => {
 .records-page {
   padding: 18px 28px 28px;
 }
+
+/* ========== 问题订单下载栏 ========== */
+.problem-bar {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 16px; padding: 12px 18px;
+  background: #fff; border-radius: 12px;
+  box-shadow: 0 2px 10px rgba(21,32,51,.04);
+  border-left: 3px solid #ff4d4f;
+}
+.problem-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 18px; border-radius: 9px; font-size: 13px; font-weight: 700;
+  border: 1.5px solid #ff4d4f; background: #fff1f0; color: #ff4d4f;
+  cursor: pointer; transition: all 160ms ease;
+}
+.problem-btn:hover { background: #ffe7e6; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(255,77,79,.15); }
+.problem-btn:disabled { opacity: .6; pointer-events: none; }
+.problem-hint { font-size: 12px; color: #9aa5b5; }
+
+/* ========== 导出弹窗 ========== */
+.export-overlay {
+  position: fixed; inset: 0; z-index: 2000;
+  background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center;
+}
+.export-dialog {
+  background: #fff; border-radius: 16px; padding: 28px 32px; width: 380px;
+  box-shadow: 0 12px 40px rgba(0,0,0,.15);
+}
+.export-dialog-title {
+  font-size: 17px; font-weight: 700; color: #1a2233; margin: 0 0 20px; text-align: center;
+}
+.export-field {
+  margin-bottom: 16px;
+}
+.export-field label {
+  display: block; font-size: 13px; font-weight: 600; color: #555; margin-bottom: 6px;
+}
+.export-input {
+  width: 100%; padding: 9px 12px; border: 1.5px solid #e0e4ea; border-radius: 9px;
+  font-size: 14px; color: #333; background: #fafbfc; outline: none;
+  transition: border-color 160ms;
+  box-sizing: border-box;
+}
+.export-input:focus { border-color: #7c5cfc; }
+.export-dialog-actions {
+  display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px;
+}
+.export-cancel-btn {
+  padding: 8px 20px; border-radius: 9px; font-size: 13px; font-weight: 600;
+  border: 1.5px solid #e0e4ea; background: #fff; color: #666; cursor: pointer;
+  transition: all 160ms;
+}
+.export-cancel-btn:hover { background: #f5f6f8; }
+.export-confirm-btn {
+  padding: 8px 20px; border-radius: 9px; font-size: 13px; font-weight: 700;
+  border: none; background: linear-gradient(135deg, #7c5cfc, #9b7cff); color: #fff;
+  cursor: pointer; transition: all 160ms;
+}
+.export-confirm-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(124,92,252,.25); }
+.export-confirm-btn:disabled { opacity: .6; pointer-events: none; }
+
+/* ========== 批次操作按钮栏 ========== */
+.drawer-actions-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 20px; border-bottom: 1px solid #edf1f6;
+}
+.verify-batch-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 7px 16px; border-radius: 8px; font-size: 13px; font-weight: 700;
+  border: 1.5px solid #5b8def; background: #eef3ff; color: #5b8def;
+  cursor: pointer; transition: all 160ms ease;
+}
+.verify-batch-btn:hover { background: #dde8ff; transform: translateY(-1px); box-shadow: 0 4px 12px rgba(91,141,239,.15); }
+.verify-batch-btn:disabled { opacity: .6; pointer-events: none; }
 
 /* ========== 统计卡片 ========== */
 
@@ -1609,6 +1919,11 @@ onMounted(() => {
 }
 
 .batch-row:last-child { margin-bottom: 0; }
+
+/* 普通用户无「失败」列：用 5 列模板，避免金额列落进窄列被折行 */
+.batch-row.no-fail-col {
+  grid-template-columns: 1.2fr 90px 90px 160px 130px;
+}
 
 .batch-head {
   display: flex;
@@ -2479,6 +2794,22 @@ onMounted(() => {
 }
 .oc-no-upstream svg { flex-shrink: 0; color: #f59e0b; }
 
+.oc-fail-reason {
+  margin-top: 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fff1f0;
+  border: 1px solid #ffccc7;
+  font-size: 12px;
+  color: #a8071a;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.oc-fail-reason svg { flex-shrink: 0; color: #ff4d4f; margin-top: 1px; }
+
 /* 验证快照区域 */
 .oc-verify {
   margin-top: 12px;
@@ -2549,6 +2880,22 @@ onMounted(() => {
 }
 
 .oc-verify-time svg { flex-shrink: 0; }
+
+/* 快照不可用提示 */
+.oc-verify-unavailable {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #f6f8fc;
+  border: 1px solid #e0e5ed;
+  font-size: 12px;
+  font-weight: 600;
+  color: #9aa5b5;
+}
+.oc-verify-unavailable svg { flex-shrink: 0; color: #b0b8c6; }
 
 /* 等待验证提示 */
 .oc-verify-pending {
@@ -2655,6 +3002,10 @@ onMounted(() => {
     padding: 16px 18px;
   }
 
+  .batch-row.no-fail-col {
+    grid-template-columns: 1.2fr 80px 80px 140px 110px;
+  }
+
   .batch-stat strong { font-size: 18px; }
   .batch-amount strong { font-size: 16px; }
 }
@@ -2679,6 +3030,38 @@ onMounted(() => {
 
 @media (max-width: 760px) {
   .records-page { padding: 12px; }
+
+  .problem-bar {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+    padding: 12px;
+    margin-bottom: 12px;
+    border-left: 0;
+    border: 1px solid #ffe1df;
+    border-radius: 10px;
+    background: #fffafa;
+    box-shadow: 0 4px 16px rgba(255, 77, 79, 0.08);
+  }
+
+  .problem-btn {
+    width: 100%;
+    height: 40px;
+    justify-content: center;
+    padding: 0 14px;
+    border-radius: 8px;
+    white-space: nowrap;
+  }
+
+  .problem-hint {
+    display: block;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: #fff3f2;
+    color: #8c96a8;
+    font-size: 12px;
+    line-height: 1.45;
+  }
 
   .btn-approve-all { height: 28px; padding: 0 10px; font-size: 12px; }
 
@@ -2733,7 +3116,7 @@ onMounted(() => {
     padding: 14px 16px;
   }
 
-  .batch-info { grid-column: 1; margin-bottom: 0; }
+  .batch-info { grid-column: 0; margin-bottom: 0; }
 
   .batch-stat,
   .batch-amount { display: none; }
@@ -2789,7 +3172,8 @@ onMounted(() => {
     font-size: 12px; padding: 3px 10px;
   }
 
-  .batch-head .batch-no { font-size: 12.5px; }
+  /* 批次号独占一行，三个标签落到下一行横向排列（不被长批次号挤成竖排） */
+  .batch-head .batch-no { font-size: 12.5px; flex-basis: 100%; }
 
   .pagination-wrap { padding: 8px 16px 16px; }
 

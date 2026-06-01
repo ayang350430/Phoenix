@@ -1,0 +1,1 @@
+import{hn as e,kr as t}from"./index-CqnrEerG.js";function n(){if(!arguments.length)return[];var t=arguments[0];return e(t)?t:[t]}var r=e=>!e&&e!==0?[]:t(e)?e:[e];export{n,r as t};

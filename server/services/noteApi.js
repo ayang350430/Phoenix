@@ -1,7 +1,7 @@
 import config from '../config/index.js'
 
 const { baseUrl, timeout, concurrency } = config.noteApi
-const PROXY_LINES = ['line_1070', 'line_1086']
+const PROXY_LINES = ['line_1070', 'line_1086', 'hailiang_14223']
 const RETRIES_PER_LINE = 2
 
 async function get(url) {
@@ -84,43 +84,110 @@ export async function fetchNoteBasic(noteId) {
 }
 
 /**
- * 获取笔记实时阅读数
+ * 获取笔记实时全量数据（阅读、点赞、收藏、评论、分享）
+ * 统一使用 /realtime 接口
  * @param {string} noteId
- * @returns {Promise<{view_count:number|null, payload:object|null}>}
  */
-export async function fetchNoteViewCount(noteId) {
+export async function fetchNoteRealtimeCounts(noteId) {
   try {
     const body = await getWithLineFailover(`/realtime?note_id=${noteId}`)
     if (body.code === 0 && body.data?.realTime) {
-      return {
-        view_count: body.data.realTime.viewNum ?? null,
-        payload: body.data
-      }
+      const rt = pickRealtimeCounts(body.data.realTime)
+      if (rt) return { ...rt, payload: body.data }
     }
-    return { view_count: null, payload: null }
+    return EMPTY_COUNTS()
   } catch {
-    return { view_count: null, payload: null }
+    return EMPTY_COUNTS()
+  }
+}
+
+const EMPTY_COUNTS = () => ({ view_count: null, like_count: null, collect_count: null, comment_count: null, share_count: null, payload: null })
+
+/**
+ * 解析 /realtime 的 data.realTime 对象
+ * 真实字段：viewNum / likeNum / favNum / cmtNum / shareNum（保留旧字段名作兜底）
+ */
+function pickRealtimeCounts(rt) {
+  if (!rt || typeof rt !== 'object') return null
+  return {
+    view_count: rt.viewNum ?? rt.view_count ?? null,
+    like_count: rt.likeNum ?? rt.likedCount ?? rt.like_count ?? null,
+    collect_count: rt.favNum ?? rt.collectCount ?? rt.collect_count ?? null,
+    comment_count: rt.cmtNum ?? rt.commentCount ?? rt.comment_count ?? null,
+    share_count: rt.shareNum ?? rt.shareCount ?? rt.share_count ?? null
   }
 }
 
 /**
- * 获取笔记点赞数
- * @param {string} noteId
- * @returns {Promise<{like_count:number|null, payload:object|null}>}
+ * 解析 /pgy 的 data.sync_data.data 对象
+ * 真实字段：read_num（阅读）/ like_num（点赞）/ fav_num（收藏）/ cmt_num（评论）/ share_num（分享）/ imp_num（曝光）
  */
-export async function fetchNoteLikeCount(noteId) {
+function pickPgyCounts(d) {
+  if (!d || typeof d !== 'object') return null
+  return {
+    view_count: d.read_num ?? d.view_num ?? null,
+    like_count: d.like_num ?? null,
+    collect_count: d.fav_num ?? null,
+    comment_count: d.cmt_num ?? null,
+    share_count: d.share_num ?? null,
+    impression_count: d.imp_num ?? null
+  }
+}
+
+/**
+ * 获取笔记「蒲公英」平台快照
+ * 调用 ${baseUrl}/pgy?note_id=xxx&proxy_line=xxx（3 线路自动故障转移）
+ * 响应结构：{ code, data: { note_id, sync_data: { data: {...各项指标} } } }
+ * @param {string} noteId
+ */
+export async function fetchNotePgyCounts(noteId) {
   try {
-    const body = await getWithLineFailover(`/likes?note_id=${noteId}`)
-    if (body.code === 0 && body.data) {
-      return {
-        like_count: body.data.likes_num ?? null,
-        payload: body.data
+    const body = await getWithLineFailover(`/pgy?note_id=${noteId}`)
+    if (body && body.code === 0 && body.data) {
+      const d = body.data.sync_data?.data || body.data.data || body.data.sync_data || null
+      const counts = pickPgyCounts(d)
+      if (counts && Object.values(counts).some(v => v != null)) {
+        return { ...counts, payload: body.data }
       }
     }
-    return { like_count: null, payload: null }
+    console.warn('[noteApi] pgy 响应结构未识别:', JSON.stringify(body).slice(0, 400))
+    return EMPTY_COUNTS()
   } catch {
-    return { like_count: null, payload: null }
+    return EMPTY_COUNTS()
   }
+}
+
+/**
+ * 按数据源获取笔记全量计数
+ * @param {string} noteId
+ * @param {'realtime'|'pgy'} dataSource
+ */
+export async function fetchNoteCounts(noteId, dataSource = 'realtime') {
+  return dataSource === 'pgy'
+    ? fetchNotePgyCounts(noteId)
+    : fetchNoteRealtimeCounts(noteId)
+}
+
+/**
+ * 获取笔记阅读数（兼容旧调用）
+ * @param {string} noteId
+ * @param {'realtime'|'pgy'} dataSource
+ * @returns {Promise<{view_count:number|null, payload:object|null}>}
+ */
+export async function fetchNoteViewCount(noteId, dataSource = 'realtime') {
+  const counts = await fetchNoteCounts(noteId, dataSource)
+  return { view_count: counts.view_count, payload: counts.payload }
+}
+
+/**
+ * 获取笔记点赞数（兼容旧调用）
+ * @param {string} noteId
+ * @param {'realtime'|'pgy'} dataSource
+ * @returns {Promise<{like_count:number|null, payload:object|null}>}
+ */
+export async function fetchNoteLikeCount(noteId, dataSource = 'realtime') {
+  const counts = await fetchNoteCounts(noteId, dataSource)
+  return { like_count: counts.like_count, payload: counts.payload }
 }
 
 // ========== 完整快照（单条） ==========
@@ -143,7 +210,7 @@ export async function fetchNoteLikeCount(noteId) {
  * @property {number|null} view_count
  * @property {string|null} count_payload — JSON 字符串，截断到 8000 字符
  */
-export async function fetchSnapshot(noteUrl, targetType = 'read') {
+export async function fetchSnapshot(noteUrl, targetType = 'read', dataSource = 'realtime') {
   const result = {
     note_id: '',
     title: '',
@@ -169,13 +236,13 @@ export async function fetchSnapshot(noteUrl, targetType = 'read') {
     result.avatar_url = basic.avatar_url
   }
 
-  // 3. 计数快照（根据类型）
+  // 3. 计数快照（根据类型 + 数据源：realtime=/realtime，pgy=/pgy）
   if (targetType === 'read' || targetType === 'view') {
-    const { view_count, payload } = await fetchNoteViewCount(noteId)
+    const { view_count, payload } = await fetchNoteViewCount(noteId, dataSource)
     result.view_count = view_count
     if (payload) result.count_payload = truncJson(payload)
   } else if (targetType === 'like') {
-    const { like_count, payload } = await fetchNoteLikeCount(noteId)
+    const { like_count, payload } = await fetchNoteLikeCount(noteId, dataSource)
     result.like_count = like_count
     if (payload) result.count_payload = truncJson(payload)
   }
@@ -193,14 +260,14 @@ export async function fetchSnapshot(noteUrl, targetType = 'read') {
  * @param {string} targetType — 'read'|'like'|'impression'
  * @returns {Promise<Map<number, NoteSnapshot>>} — key 为 lines 数组下标
  */
-export async function collectSnapshots(lines, targetType = 'read') {
+export async function collectSnapshots(lines, targetType = 'read', dataSource = 'realtime') {
   const results = new Map()
   const batch = concurrency
 
   for (let i = 0; i < lines.length; i += batch) {
     const chunk = lines.slice(i, i + batch)
     const tasks = chunk.map((line, j) =>
-      fetchSnapshot(line.url, targetType).then(snap => {
+      fetchSnapshot(line.url, targetType, dataSource).then(snap => {
         results.set(i + j, snap)
       })
     )
