@@ -47,8 +47,15 @@ const Chat = {
     let conv = await db('chat_conversations')
       .where({ user_id: userId, status: 'open' }).first()
     if (!conv) {
-      const [id] = await db('chat_conversations').insert({ user_id: userId })
+      const ownerId = await this._resolveOwnerId(userId)
+      const [id] = await db('chat_conversations').insert({ user_id: userId, owner_id: ownerId })
       conv = await db('chat_conversations').where({ id }).first()
+    } else if (conv.owner_id == null) {
+      const ownerId = await this._resolveOwnerId(userId)
+      if (ownerId) {
+        await db('chat_conversations').where({ id: conv.id }).update({ owner_id: ownerId })
+        conv.owner_id = ownerId
+      }
     }
     return conv
   },
@@ -86,11 +93,38 @@ const Chat = {
       )
       .where('chat_conversations.last_message_at', '>=', db.raw("NOW() - INTERVAL 5 MINUTE"))
       .orderBy('chat_conversations.last_message_at', 'desc')
-    // 非管理员只看自己归属的会话
-    if (!isAdmin && staffUserId) {
+    // 重新检查 owner_id：上级角色可能已变更
+    const openConvs = await db('chat_conversations').where('status', 'open').select('id', 'user_id', 'owner_id')
+    for (const conv of openConvs) {
+      const newOwnerId = await this._resolveOwnerId(conv.user_id)
+      if ((newOwnerId || null) !== (conv.owner_id || null)) {
+        await db('chat_conversations').where({ id: conv.id }).update({ owner_id: newOwnerId })
+      }
+    }
+    if (isAdmin) {
+      q.where(function () {
+        this.whereNull('chat_conversations.owner_id')
+      })
+    } else if (staffUserId) {
       q.where('chat_conversations.owner_id', staffUserId)
     }
-    return q
+    const rows = await q
+    const userIds = [...new Set(rows.map(r => r.user_id).filter(Boolean))]
+    if (userIds.length > 0) {
+      const roleRows = await db('user_roles')
+        .join('roles', 'roles.id', 'user_roles.role_id')
+        .whereIn('user_roles.user_id', userIds)
+        .select('user_roles.user_id', 'roles.code')
+      const roleMap = {}
+      for (const r of roleRows) {
+        if (!roleMap[r.user_id]) roleMap[r.user_id] = []
+        roleMap[r.user_id].push(r.code)
+      }
+      for (const row of rows) {
+        row.user_roles = roleMap[row.user_id] || ['user']
+      }
+    }
+    return rows
   },
 
   async markRead(conversationId) {
@@ -150,6 +184,17 @@ const Chat = {
     await ensureTable()
     return db('chat_conversations')
       .where({ user_id: userId, status: 'open' }).first()
+  },
+
+  async _resolveOwnerId(userId) {
+    const user = await db('users').where({ id: userId }).select('referred_by').first()
+    if (!user?.referred_by) return null
+    const agentRoles = await db('roles')
+      .join('user_roles', 'roles.id', 'user_roles.role_id')
+      .where('user_roles.user_id', user.referred_by)
+      .select('roles.code')
+    const hasSupport = agentRoles.some(r => r.code === 'support')
+    return hasSupport ? user.referred_by : null
   }
 }
 

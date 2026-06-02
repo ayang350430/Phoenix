@@ -195,4 +195,76 @@ router.get('/referred', roleRequired('admin', 'agent'), async (req, res) => {
   }
 })
 
+// GET /api/users/agents — 管理员获取代理列表（用于筛选下拉）
+router.get('/agents', adminRequired, async (req, res) => {
+  try {
+    const agents = await db('users')
+      .join('user_roles', 'users.id', 'user_roles.user_id')
+      .join('roles', 'roles.id', 'user_roles.role_id')
+      .where('roles.code', 'agent')
+      .select('users.id', 'users.username', 'users.nickname')
+      .orderBy('users.id', 'asc')
+    const result = []
+    for (const a of agents) {
+      const subCount = await db('users').where({ referred_by: a.id }).count('id as cnt').first()
+      result.push({ ...a, sub_count: Number(subCount?.cnt) || 0 })
+    }
+    res.json({ code: 0, data: result })
+  } catch (err) {
+    res.status(500).json({ code: 500, message: err.message })
+  }
+})
+
+// ========== 注册奖励配置 ==========
+
+// GET /api/users/register-bonus — 管理员获取所有代理的注册奖励配置
+router.get('/register-bonus', adminRequired, async (req, res) => {
+  try {
+    if (!(await db.schema.hasTable('agent_register_bonus'))) {
+      await db.schema.createTable('agent_register_bonus', t => {
+        t.increments('id')
+        t.integer('agent_id').unsigned().notNullable().unique()
+        t.decimal('bonus_amount', 12, 2).notNullable().defaultTo(0)
+        t.timestamp('updated_at').defaultTo(db.fn.now())
+      })
+    }
+    const bonuses = await db('agent_register_bonus')
+      .join('users', 'users.id', 'agent_register_bonus.agent_id')
+      .select('agent_register_bonus.*', 'users.username', 'users.nickname')
+      .orderBy('agent_register_bonus.agent_id', 'asc')
+    res.json({ code: 0, data: bonuses })
+  } catch (err) {
+    res.status(500).json({ code: 500, message: err.message })
+  }
+})
+
+// PUT /api/users/register-bonus/:agentId — 管理员设置某代理的注册奖励
+router.put('/register-bonus/:agentId', adminRequired, async (req, res) => {
+  try {
+    const agentId = Number(req.params.agentId)
+    const { bonus_amount } = req.body
+    const amount = parseFloat(bonus_amount)
+    if (isNaN(amount) || amount < 0) {
+      return res.status(400).json({ code: 400, message: '金额无效' })
+    }
+    if (!(await db.schema.hasTable('agent_register_bonus'))) {
+      await db.schema.createTable('agent_register_bonus', t => {
+        t.increments('id')
+        t.integer('agent_id').unsigned().notNullable().unique()
+        t.decimal('bonus_amount', 12, 2).notNullable().defaultTo(0)
+        t.timestamp('updated_at').defaultTo(db.fn.now())
+      })
+    }
+    const existing = await db('agent_register_bonus').where({ agent_id: agentId }).first()
+    if (existing) {
+      await db('agent_register_bonus').where({ agent_id: agentId }).update({ bonus_amount: amount, updated_at: new Date() })
+    } else {
+      await db('agent_register_bonus').insert({ agent_id: agentId, bonus_amount: amount })
+    }
+    res.json({ code: 0, message: `注册奖励已设置为 ¥${amount.toFixed(2)}` })
+  } catch (err) {
+    res.status(500).json({ code: 500, message: err.message })
+  }
+})
+
 export default router

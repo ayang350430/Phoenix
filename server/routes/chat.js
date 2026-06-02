@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { authRequired } from '../middleware/auth.js'
 import Chat from '../models/Chat.js'
+import db from '../db.js'
 
 const router = Router()
 router.use(authRequired)
@@ -97,6 +98,29 @@ router.post('/conversations/:id/reply', staffRequired, async (req, res) => {
   } catch (err) {
     console.error('[chat/reply]', err.message)
     res.status(500).json({ code: 500, message: '回复失败' })
+  }
+})
+
+router.get('/user-agent/:userId', staffRequired, async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId)
+    const user = await db('users').where({ id: userId }).select('referred_by').first()
+    if (!user?.referred_by) {
+      return res.json({ code: 0, data: { agent: null } })
+    }
+    const agent = await db('users').where({ id: user.referred_by })
+      .select('id', 'username', 'nickname', 'real_name').first()
+    if (!agent) return res.json({ code: 0, data: { agent: null } })
+    const roles = await db('roles')
+      .join('user_roles', 'roles.id', 'user_roles.role_id')
+      .where('user_roles.user_id', agent.id)
+      .select('roles.code')
+    agent.roles = roles.map(r => r.code)
+    agent.hasSupport = agent.roles.includes('support')
+    res.json({ code: 0, data: { agent } })
+  } catch (err) {
+    console.error('[chat/user-agent]', err.message)
+    res.status(500).json({ code: 500, message: '查询失败' })
   }
 })
 

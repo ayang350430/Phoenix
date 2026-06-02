@@ -6,7 +6,6 @@ import { LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer])
-import bannerBg from '../assets/banner_gzt.png'
 import iconPin from '../assets/batch-submit_pl.png'
 import iconYuedu from '../assets/read-task_yd.png'
 import iconDianzan from '../assets/like-task_dz.png'
@@ -89,16 +88,20 @@ function pn(item) {
 function formatStatus(s) { return statusMap[s] || s || '-' }
 function formatRecordType(r) { return r.remark || recordTypeMap[r.record_type] || r.record_type || '-' }
 function isIncomeRecord(r) { return r.direction === 'in' || r.direction === 'credit' }
-function recordAmount(r) { return parseFloat(r.actual_paid_amount || 0).toFixed(2) }
+
+function recordAmount(r) {
+  const raw = r.actual_paid_amount ?? r.net_amount ?? r.payable_amount ?? r.refund_amount ?? 0
+  return Math.abs(parseFloat(raw) || 0).toFixed(2)
+}
 function recordTone(r) { return isIncomeRecord(r) ? 'income' : 'expense' }
 
 // 通知类型配置
 const notifyConf = {
-  recharge:         { icon: '💰', label: '充值', color: '#42c978', bg: '#e8faf0' },
-  order_ok:         { icon: '✅', label: '订单', color: '#42c978', bg: '#e8faf0' },
-  order_fail:       { icon: '❌', label: '订单', color: '#ff4d4f', bg: '#fff1f0' },
-  batch_ok:         { icon: '📦', label: '批次', color: '#42c978', bg: '#e8faf0' },
-  batch_fail:       { icon: '📦', label: '批次', color: '#ff4d4f', bg: '#fff1f0' },
+  recharge: { icon: '💰', label: '充值', color: '#42c978', bg: '#e8faf0' },
+  order_ok: { icon: '✅', label: '订单', color: '#42c978', bg: '#e8faf0' },
+  order_fail: { icon: '❌', label: '订单', color: '#ff4d4f', bg: '#fff1f0' },
+  batch_ok: { icon: '📦', label: '批次', color: '#42c978', bg: '#e8faf0' },
+  batch_fail: { icon: '📦', label: '批次', color: '#ff4d4f', bg: '#fff1f0' },
   admin_supplement: { icon: '📋', label: '审核', color: '#f5a623', bg: '#fff7e6' }
 }
 function nc(type) { return notifyConf[type] || notifyConf.order_ok }
@@ -167,7 +170,7 @@ function updateChart() {
       textStyle: { color: '#425066', fontSize: 13 },
       formatter: params => {
         const p = params[0]
-        return `<strong>${p.name}</strong><br/>订单数：<strong style="color:#8b7bf7">${p.value}</strong>`
+        return `<strong>${p.name}</strong><br/>订单数：<strong style="color:#2f6df6">${p.value}</strong>`
       }
     },
     grid: { left: 45, right: 20, top: 25, bottom: 30, containLabel: false },
@@ -195,15 +198,15 @@ function updateChart() {
       symbol: 'circle',
       symbolSize: 8,
       showSymbol: true,
-      lineStyle: { color: '#8b7bf7', width: 3 },
-      itemStyle: { color: '#8b7bf7', borderColor: '#fff', borderWidth: 2 },
+      lineStyle: { color: '#2f6df6', width: 3 },
+      itemStyle: { color: '#2f6df6', borderColor: '#fff', borderWidth: 2 },
       areaStyle: {
         color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-          { offset: 0, color: 'rgba(139, 123, 247, 0.35)' },
-          { offset: 1, color: 'rgba(139, 123, 247, 0.03)' }
+          { offset: 0, color: 'rgba(47, 109, 246, 0.28)' },
+          { offset: 1, color: 'rgba(47, 109, 246, 0.03)' }
         ])
       },
-      label: { show: true, position: 'top', color: '#8b7bf7', fontWeight: 700, fontSize: 12 }
+      label: { show: true, position: 'top', color: '#2f6df6', fontWeight: 700, fontSize: 12 }
     }]
   })
 }
@@ -285,39 +288,36 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="dash-grid" :class="{ 'regular-user-dashboard': !showActivityAndFlow }">
-    <!-- Mobile Hero Banner -->
-    <section class="mobile-hero">
+    <!-- 普通用户移动端横幅（管理员/代理首页不展示，避免顶栏下出现蓝色细线） -->
+    <section v-if="!showActivityAndFlow" class="mobile-hero">
       <div class="mh-content">
-        <h2>智能与数字化<br/>工具</h2>
+        <h2>智能与数字化<br />工具</h2>
         <p>数据工作台专业版</p>
         <button type="button" @click="router.push('/batch')">立即开始</button>
       </div>
       <div class="mh-deco"></div>
     </section>
 
-    <!-- Banner (desktop) -->
-    <section class="dash-banner">
-      <img :src="bannerBg" alt="Banner" class="banner-img" />
-    </section>
-
-    <section class="desktop-overview">
-      <div class="overview-copy">
-        <span class="overview-eyebrow">工作概览</span>
-        <h1>{{ userName }}，今天继续推进任务</h1>
-        <p>快速查看账户余额、任务数据和最新动态，常用工具都在这里。</p>
+    <section class="dash-hero">
+      <div class="dash-hero-text">
+        <span class="dash-hero-badge">工作概览</span>
+        <h1>{{ userName }}，欢迎回来</h1>
+        <p>账户余额、任务数据与常用工具，一页掌握。</p>
+        <button type="button" class="dash-hero-cta" @click="router.push('/batch')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+          去下单
+        </button>
       </div>
-      <div class="overview-metrics" aria-label="首页数据概览"
-        :style="{ gridTemplateColumns: `minmax(130px, 1.25fr) repeat(${statCards.length}, minmax(82px, 1fr))` }">
-        <div class="overview-balance">
-          <span>账户余额</span>
-          <strong>¥{{ balance.toFixed(2) }}</strong>
+      <div class="dash-stat-grid" aria-label="首页数据概览">
+        <div class="dash-stat-card dash-stat-card--balance">
+          <span class="dash-stat-label">账户余额</span>
+          <strong class="dash-stat-value">¥{{ balance.toFixed(2) }}</strong>
         </div>
-        <div v-for="stat in statCards" :key="stat.label" class="overview-stat">
-          <strong>{{ stat.value }}</strong>
-          <span>{{ stat.label }}</span>
+        <div v-for="stat in statCards" :key="stat.label" class="dash-stat-card">
+          <span class="dash-stat-label">{{ stat.label }}</span>
+          <strong class="dash-stat-value">{{ stat.value }}</strong>
         </div>
       </div>
-      <button type="button" class="overview-action" @click="router.push('/batch')">去下单</button>
     </section>
 
     <section class="card apps-card">
@@ -331,7 +331,6 @@ onBeforeUnmount(() => {
             <img :src="app.img" :alt="app.name" />
           </span>
           <strong>{{ app.name }}</strong>
-          <span class="app-arrow" aria-hidden="true">›</span>
         </button>
       </div>
     </section>
@@ -341,17 +340,14 @@ onBeforeUnmount(() => {
       <div class="card-title">
         <h2>最新动态</h2>
         <div class="todo-tabs">
-          <button
-            v-for="tab in notifyTabs"
-            :key="tab[0]"
-            :class="{ active: activeTodo === tab[0] }"
-            @click="activeTodo = tab[0]"
-          >{{ tab[0] }}<span class="tab-count">({{ tab[1] }})</span></button>
+          <button v-for="tab in notifyTabs" :key="tab[0]" :class="{ active: activeTodo === tab[0] }"
+            @click="activeTodo = tab[0]">{{ tab[0] }}<span class="tab-count">({{ tab[1] }})</span></button>
         </div>
       </div>
       <ul class="notify-list" v-if="filteredNotifications.length">
         <li v-for="n in filteredNotifications" :key="n.id" :class="'ntype-' + n.type">
-          <span class="notify-icon" :style="{ background: nc(n.type).bg, color: nc(n.type).color }">{{ nc(n.type).icon }}</span>
+          <span class="notify-icon" :style="{ background: nc(n.type).bg, color: nc(n.type).color }">{{ nc(n.type).icon
+            }}</span>
           <div class="notify-body">
             <div class="notify-head">
               <p class="notify-title">{{ n.title }}</p>
@@ -365,17 +361,19 @@ onBeforeUnmount(() => {
     </section>
 
     <aside v-if="showActivityAndFlow" class="side-column">
-      <section class="profile-card">
+      <!-- <section class="profile-card">
         <button type="button" class="avatar large avatar-button" @click="openUserDrawer()">
           <img v-if="userAvatar" :src="userAvatar" :alt="userName" class="avatar-img" />
           <span v-else class="avatar-initial">{{ userInitial }}</span>
         </button>
         <div>
-          <h2>{{ userName }} <span class="role-badge small" :class="isAdmin ? 'admin' : isAgent ? 'agent' : 'user'">{{ roleLabel }}</span></h2>
-          <p>余额 ¥{{ balance.toFixed(2) }}</p>
+          <h2>{{ userName }} <span class="role-badge small" :class="isAdmin ? 'admin' : isAgent ? 'agent' : 'user'">{{
+              roleLabel }}</span></h2>
+          <p style="color: #333;margin-top: 6px; font-size: 14px;">余额 ¥{{ balance.toFixed(2) }}</p>
         </div>
-        <time>{{ new Date().toLocaleTimeString() }}<br />{{ ['日','一','二','三','四','五','六'][new Date().getDay()] }}</time>
-      </section>
+        <time style="color:#333;font-weight: 600;">{{ new Date().toLocaleTimeString() }}<br />{{
+          ['日', '一', '二', '三', '四', '五', '六'][new Date().getDay()] }}</time>
+      </section> -->
 
       <!-- 最近账务记录 -->
       <section v-if="showActivityAndFlow" class="card list-card">
@@ -383,18 +381,15 @@ onBeforeUnmount(() => {
           <h2>余额流水</h2>
         </div>
         <div v-if="recentRecords.length" class="balance-flow-list">
-          <div
-            v-for="r in recentRecords"
-            :key="r.id"
-            class="balance-flow-item"
-            :class="recordTone(r)"
-          >
+          <div v-for="r in recentRecords" :key="r.id" class="balance-flow-item" :class="recordTone(r)">
             <span class="flow-mark" aria-hidden="true">
               <svg viewBox="0 0 32 32" focusable="false">
-                <path class="bag-body" d="M9.4 13.8c1.2-2.1 3.1-3.4 6.6-3.4s5.4 1.3 6.6 3.4l2.4 4.3c2.3 4.1-.2 8.1-5 8.1h-8c-4.8 0-7.3-4-5-8.1l2.4-4.3Z" />
+                <path class="bag-body"
+                  d="M9.4 13.8c1.2-2.1 3.1-3.4 6.6-3.4s5.4 1.3 6.6 3.4l2.4 4.3c2.3 4.1-.2 8.1-5 8.1h-8c-4.8 0-7.3-4-5-8.1l2.4-4.3Z" />
                 <path class="bag-neck" d="M12.2 7.4c1.2.8 6.4.8 7.6 0l-1.9 3.2h-3.8l-1.9-3.2Z" />
                 <path class="coin" d="M22.6 10.9a3.8 3.8 0 1 0 0-7.6 3.8 3.8 0 0 0 0 7.6Z" />
-                <path class="yuan" d="M13 15.3h2.1l1 1.6 1-1.6h2.1l-1.7 2.6h1.4v1.4h-1.8v1h1.8v1.4h-1.8v1.5h-2v-1.5h-1.8v-1.4h1.8v-1h-1.8v-1.4h1.4L13 15.3Z" />
+                <path class="yuan"
+                  d="M13 15.3h2.1l1 1.6 1-1.6h2.1l-1.7 2.6h1.4v1.4h-1.8v1h1.8v1.4h-1.8v1.5h-2v-1.5h-1.8v-1.4h1.8v-1h-1.8v-1.4h1.4L13 15.3Z" />
               </svg>
             </span>
             <div class="flow-main">
@@ -413,40 +408,34 @@ onBeforeUnmount(() => {
     <!-- 底部导航卡片 -->
     <section class="card bottom-card">
       <div class="bottom-tabs">
-        <button
-          v-for="nav in bottomNavs"
-          :key="nav"
-          type="button"
-          :class="{ active: activeBottomNav === nav }"
-          @click="activeBottomNav = nav"
-        >{{ nav }}</button>
+        <button v-for="nav in bottomNavs" :key="nav" type="button" :class="{ active: activeBottomNav === nav }"
+          @click="activeBottomNav = nav">{{ nav }}</button>
       </div>
 
       <!-- 数据概览 -->
-      <div v-if="activeBottomNav === '数据概览'" class="bottom-content">
-        <div class="chart-stats-row">
-          <div v-for="stat in statCards" :key="stat.label" class="chart-stat-item">
-            <strong>{{ stat.value }}</strong>
-            <span>{{ stat.label }}</span>
-          </div>
-        </div>
+      <div v-if="activeBottomNav === '数据概览'" class="bottom-content bottom-chart">
+        <p class="chart-section-title">近 7 日订单趋势</p>
         <div v-if="dailyStats.some(d => d.count > 0)" ref="chartRef" class="echarts-container"></div>
-        <p v-else class="empty-hint">暂无数据</p>
+        <p v-else class="empty-hint">暂无趋势数据</p>
       </div>
 
       <!-- 类型汇总 -->
       <div v-else-if="activeBottomNav === '类型汇总'" class="bottom-content">
-        <div class="yearly-grid" v-if="typeCards.length">
-          <span v-for="item in typeCards" :key="item[0]"><strong>{{ item[0] }}</strong>{{ item[1] }}</span>
+        <div v-if="typeCards.length" class="type-stat-grid">
+          <div v-for="item in typeCards" :key="item[0]" class="type-stat-card">
+            <span class="type-stat-label">{{ item[0] }}</span>
+            <strong class="type-stat-value">{{ item[1] }}</strong>
+          </div>
         </div>
         <p v-else class="empty-hint">暂无类型数据</p>
       </div>
 
       <!-- 最近订单 -->
       <div v-else-if="activeBottomNav === '最近订单'" class="bottom-content bottom-list">
-        <ul v-if="recentOrders.length">
-          <li v-for="o in recentOrders" :key="o.id">
-            <span>{{ pn(o) }} — {{ o.title || o.note_url || o.order_no }}</span>
+        <ul v-if="recentOrders.length" class="feed-list">
+          <li v-for="o in recentOrders" :key="o.id" class="feed-row">
+            <span class="feed-chip">{{ pn(o) }}</span>
+            <span class="feed-text">{{ o.title || o.note_url || o.order_no }}</span>
             <time>{{ formatTime(o.created_at) }}</time>
           </li>
         </ul>
@@ -455,9 +444,10 @@ onBeforeUnmount(() => {
 
       <!-- 最近批次 -->
       <div v-else-if="activeBottomNav === '最近批次'" class="bottom-content bottom-list">
-        <ul v-if="recentBatches.length">
-          <li v-for="b in recentBatches" :key="b.id">
-            <span>批次 {{ b.batch_no || b.batch_id }}</span>
+        <ul v-if="recentBatches.length" class="feed-list">
+          <li v-for="b in recentBatches" :key="b.id" class="feed-row">
+            <span class="feed-chip feed-chip--batch">批次</span>
+            <span class="feed-text feed-text--mono">{{ b.batch_no || b.batch_id }}</span>
             <time>{{ formatTime(b.created_at) }}</time>
           </li>
         </ul>
@@ -469,55 +459,38 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .dash-grid {
+  --dash-primary: #2f6df6;
+  --dash-text: #152033;
+  --dash-muted: #647184;
+  --dash-text-2: #425066;
+  --dash-border: #e8edf4;
+  --dash-radius: 14px;
   --dashboard-main-row-height: clamp(380px, calc(100vh - 260px), 460px);
-  padding: 18px 28px 30px;
+  padding: 20px 24px 28px;
   display: grid;
-  grid-template-columns: 1.05fr 1.35fr 0.92fr;
-  gap: 16px;
+  grid-template-columns: minmax(280px, 0.95fr) minmax(320px, 1.2fr) minmax(260px, 0.85fr);
+  gap: 18px;
   max-width: 100%;
   overflow-x: hidden;
   box-sizing: border-box;
 }
 
-/* ========== Banner ========== */
-
 .mobile-hero {
   display: none;
 }
 
-.dash-banner {
-  grid-column: 1 / -1;
-  border-radius: 14px;
-  overflow: hidden;
-  box-shadow: 0 8px 28px rgba(21, 32, 51, 0.08);
-  display: none;
-}
-
-.banner-img {
-  display: block;
-  width: 100%;
-  height: auto;
-}
-
 .card,
 .profile-card {
-  border-radius: 8px;
+  border-radius: var(--dash-radius);
   background: #fff;
-  border: 1px solid #e9eef6;
-  box-shadow: 0 12px 30px rgba(21, 32, 51, 0.045);
+  border: 1px solid var(--dash-border);
+  box-shadow: 0 8px 24px rgba(21, 32, 51, 0.04);
   align-self: start;
   transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 240ms ease, border-color 240ms ease;
 }
 
-.card:hover,
-.profile-card:hover {
-  transform: translateY(-2px);
-  border-color: #dde5f1;
-  box-shadow: 0 18px 36px rgba(21, 32, 51, 0.075);
-}
-
 .card {
-  padding: 20px;
+  padding: 18px 20px 20px;
   align-self: start;
   min-height: 0;
   max-height: none;
@@ -537,7 +510,9 @@ onBeforeUnmount(() => {
 .card-title h2 {
   position: relative;
   padding-left: 10px;
-  font-size: 18px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--dash-text);
   line-height: 1.2;
 }
 
@@ -549,133 +524,132 @@ onBeforeUnmount(() => {
   width: 3px;
   height: 16px;
   border-radius: 999px;
-  background: linear-gradient(180deg, #ee4d7a, #5b8def);
+  background: var(--dash-primary);
   transform: translateY(-50%);
 }
 
 .card-title button {
-  color: #8b7bf7;
-  font-weight: 800;
-  transition: color 240ms ease, transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.card-title button:hover { color: #ee4d7a; transform: translateX(2px); }
-.card-title button:active { transform: translateX(2px) scale(0.96); }
-
-.desktop-overview {
-  grid-column: 1 / -1;
-  display: grid;
-  grid-template-columns: minmax(260px, 1.05fr) minmax(460px, 1.55fr) auto;
-  align-items: center;
-  gap: 18px;
-  padding: 18px 22px;
-  border: 1px solid #e6ecf5;
-  border-radius: 8px;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 255, 0.98) 58%, rgba(255, 247, 250, 0.94)),
-    radial-gradient(circle at 86% 0%, rgba(91, 141, 239, 0.12), transparent 34%);
-  box-shadow: 0 14px 34px rgba(21, 32, 51, 0.055);
-}
-
-.overview-copy {
-  min-width: 0;
-}
-
-.overview-eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: #5b8def;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.overview-eyebrow::before {
-  content: '';
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #42c978;
-  box-shadow: 0 0 0 4px rgba(66, 201, 120, 0.12);
-}
-
-.overview-copy h1 {
-  margin: 6px 0 5px;
-  color: #152033;
-  font-size: 22px;
-  line-height: 1.25;
-}
-
-.overview-copy p {
-  margin: 0;
-  color: #647184;
+  color: var(--dash-primary);
   font-size: 13px;
-  line-height: 1.6;
+  font-weight: 700;
+  transition: opacity 200ms ease;
 }
 
-.overview-metrics {
-  display: grid;
-  grid-template-columns: minmax(130px, 1.25fr) repeat(4, minmax(82px, 1fr));
-  gap: 10px;
+.card-title button:hover {
+  opacity: 0.8;
+}
+
+.card-title button:active {
+  transform: translateX(2px) scale(0.96);
+}
+
+.dash-hero {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 20px;
+  padding: 22px 24px;
+  border: 1px solid var(--dash-border);
+  border-radius: var(--dash-radius);
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(21, 32, 51, 0.05);
+}
+
+.dash-hero-text {
+  flex: 1 1 240px;
   min-width: 0;
 }
 
-.overview-balance,
-.overview-stat {
-  min-width: 0;
-  padding: 12px 14px;
-  border: 1px solid #edf1f7;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.86);
-  box-shadow: 0 8px 20px rgba(21, 32, 51, 0.035);
-}
-
-.overview-balance span,
-.overview-stat span {
-  display: block;
-  color: #8a95a8;
+.dash-hero-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(47, 109, 246, 0.1);
+  color: var(--dash-primary);
   font-size: 12px;
+  font-weight: 700;
+}
+
+.dash-hero-text h1 {
+  margin: 10px 0 6px;
+  color: var(--dash-text);
+  font-size: 24px;
+  font-weight: 800;
   line-height: 1.3;
 }
 
-.overview-balance strong,
-.overview-stat strong {
+.dash-hero-text p {
+  margin: 0;
+  color: var(--dash-muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.dash-hero-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 16px;
+  height: 40px;
+  padding: 0 20px;
+  border-radius: 10px;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  background: var(--dash-primary);
+  box-shadow: 0 8px 20px rgba(47, 109, 246, 0.28);
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.dash-hero-cta:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(47, 109, 246, 0.32);
+}
+
+.dash-stat-grid {
+  flex: 2 1 420px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+  gap: 10px;
+  min-width: 0;
+  align-content: center;
+}
+
+.dash-stat-card {
+  padding: 14px 16px;
+  border: 1px solid var(--dash-border);
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.dash-stat-card--balance {
+  background: linear-gradient(135deg, rgba(47, 109, 246, 0.08), rgba(47, 109, 246, 0.02));
+  border-color: rgba(47, 109, 246, 0.15);
+}
+
+.dash-stat-label {
   display: block;
-  margin-top: 5px;
-  color: #152033;
-  font-size: 20px;
-  line-height: 1.15;
-  font-weight: 900;
+  color: #8a95a8;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.dash-stat-value {
+  display: block;
+  margin-top: 6px;
+  color: var(--dash-text);
+  font-size: 22px;
+  font-weight: 800;
   font-variant-numeric: tabular-nums;
+  line-height: 1.15;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.overview-balance strong {
-  color: #ee4d7a;
-}
-
-.overview-action {
-  justify-self: end;
-  min-width: 96px;
-  height: 42px;
-  padding: 0 18px;
-  border-radius: 999px;
-  color: #fff;
-  font-weight: 900;
-  background: linear-gradient(135deg, #2f6df6, #5b8def);
-  box-shadow: 0 12px 24px rgba(47, 109, 246, 0.24);
-  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 220ms ease;
-}
-
-.overview-action:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 16px 28px rgba(47, 109, 246, 0.28);
-}
-
-.overview-action:active {
-  transform: translateY(0) scale(0.97);
+.dash-stat-card--balance .dash-stat-value {
+  color: var(--dash-primary);
 }
 
 .app-grid {
@@ -684,146 +658,148 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-content: start;
-  gap: 12px;
+  gap: 8px;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 0 2px 8px 0;
 }
 
 .app-item {
-  display: grid;
-  grid-template-columns: 42px minmax(0, 1fr) auto;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-items: start;
-  gap: 12px;
-  min-height: 74px;
-  padding: 12px;
-  border: 1px solid #edf1f7;
-  border-radius: 8px;
-  background: #fbfcff;
-  color: #425066;
-  text-align: left;
-  transition: color 240ms ease, transform 240ms cubic-bezier(0.22, 1, 0.36, 1), border-color 240ms ease, background 240ms ease, box-shadow 240ms ease;
+  justify-content: center;
+  gap: 8px;
+  min-height: 86px;
+  padding: 12px 8px;
+  border: 1px solid var(--dash-border);
+  border-radius: 12px;
+  background: #f8fafc;
+  color: var(--dash-text-2);
+  text-align: center;
+  transition: border-color 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
 
 .app-item:hover {
-  border-color: #dfe7f4;
+  border-color: rgba(47, 109, 246, 0.28);
   background: #fff;
-  transform: translateY(-2px);
-  box-shadow: 0 10px 22px rgba(21, 32, 51, 0.055);
+  box-shadow: 0 4px 14px rgba(47, 109, 246, 0.1);
 }
 
-.app-item:active { transform: translateY(-1px) scale(0.97); }
+.app-item:active {
+  transform: scale(0.98);
+}
 
 .app-icon {
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
-  border-radius: 8px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid var(--dash-border);
   overflow: hidden;
-  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 240ms ease;
 }
 
 .app-icon img {
-  width: 100%;
-  height: 100%;
+  width: 32px;
+  height: 32px;
   object-fit: contain;
 }
 
-.app-item:hover .app-icon {
-  transform: scale(1.06);
-}
-
 .app-item strong {
-  min-width: 0;
-  color: #243149;
-  font-size: 14px;
-  line-height: 1.3;
+  width: 100%;
+  color: var(--dash-text);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.35;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.app-arrow {
-  color: #b4bdcb;
-  font-size: 20px;
-  line-height: 1;
-}
-
 .todo-card .card-title {
-  padding-bottom: 12px;
-  border-bottom: 1px solid #e8edf4;
+  flex-wrap: wrap;
+  align-items: center;
+  row-gap: 10px;
+  margin-bottom: 12px;
 }
 
 .todo-tabs {
   display: flex;
-  gap: 6px;
+  flex: 1 1 100%;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 10px;
+  background: #f1f5f9;
 }
 
 .todo-tabs button {
-  position: relative;
-  padding: 5px 9px;
-  border-radius: 999px;
-  color: #647184;
-  font-weight: 700;
-  transition: color 240ms ease, background 240ms ease, transform 240ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 240ms ease;
+  flex: 1;
+  padding: 7px 6px;
+  border-radius: 8px;
+  color: var(--dash-muted);
+  font-size: 12px;
+  font-weight: 600;
+  transition: color 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
 
 .todo-tabs .active {
-  background: #fff1f5;
-  color: #ee4d7a;
-  box-shadow: 0 8px 18px rgba(238, 77, 122, 0.12);
+  color: var(--dash-primary);
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(21, 32, 51, 0.08);
 }
 
-.todo-tabs button:hover { color: #ee4d7a; background: #fff7fa; }
-.todo-tabs button:active { transform: scale(0.96); }
+.todo-tabs button:hover:not(.active) {
+  color: var(--dash-text);
+}
 
 .notify-list {
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-top: 4px;
+  gap: 0;
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 0 2px 8px 0;
 }
 
 .notify-list li {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  padding: 12px;
-  border: 1px solid #edf1f7;
-  border-radius: 8px;
-  background: #fbfcff;
-  transition: background 200ms ease, transform 200ms ease, border-color 200ms ease;
+  gap: 10px;
+  padding: 11px 4px;
+  border: none;
+  border-bottom: 1px solid #f0f2f5;
+  border-radius: 0;
+  background: transparent;
+  transition: background 160ms ease;
   cursor: default;
+}
+
+.notify-list li:last-child {
+  border-bottom: none;
 }
 
 .notify-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
 }
 
 .notify-list li:hover {
-  border-color: #dfe7f4;
-  background: #fff;
-  transform: translateX(2px);
+  background: #f8fafc;
+  border-radius: 8px;
 }
 
 .notify-icon {
-  width: 34px;
-  height: 34px;
-  border-radius: 8px;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
   display: grid;
   place-items: center;
-  font-size: 16px;
+  font-size: 15px;
   flex-shrink: 0;
 }
 
@@ -834,8 +810,9 @@ onBeforeUnmount(() => {
 
 .notify-title {
   font-size: 13px;
-  font-weight: 700;
-  color: #152033;
+  font-weight: 600;
+  color: var(--dash-text);
+  line-height: 1.4;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -843,8 +820,9 @@ onBeforeUnmount(() => {
 
 .notify-desc {
   font-size: 12px;
-  color: #9aa5b5;
+  color: var(--dash-muted);
   margin-top: 2px;
+  line-height: 1.45;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -852,9 +830,10 @@ onBeforeUnmount(() => {
 
 .notify-time {
   font-size: 11px;
-  color: #b0b8c6;
+  color: #9aa5b5;
   white-space: nowrap;
   flex-shrink: 0;
+  line-height: 1.4;
 }
 
 .apps-card,
@@ -897,16 +876,34 @@ onBeforeUnmount(() => {
   margin-left: 6px;
 }
 
-.order-status.completed { background: #f0fff4; color: #42c978; }
-.order-status.pending { background: #fff7e6; color: #f5a623; }
-.order-status.processing { background: #eef3ff; color: #5b8def; }
-.order-status.failed { background: #fff1f0; color: #ff4d4f; }
-.order-status.refunded { background: #f6f8fc; color: #9aa5b5; }
+.order-status.completed {
+  background: #f0fff4;
+  color: #42c978;
+}
+
+.order-status.pending {
+  background: #fff7e6;
+  color: #f5a623;
+}
+
+.order-status.processing {
+  background: #eef3ff;
+  color: #5b8def;
+}
+
+.order-status.failed {
+  background: #fff1f0;
+  color: #ff4d4f;
+}
+
+.order-status.refunded {
+  background: #f6f8fc;
+  color: #9aa5b5;
+}
 
 .side-column {
-  display: grid;
-  gap: 16px;
-  grid-template-rows: auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   height: var(--dashboard-main-row-height);
   min-height: 0;
   overflow: hidden;
@@ -930,7 +927,7 @@ onBeforeUnmount(() => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
@@ -939,49 +936,51 @@ onBeforeUnmount(() => {
 
 .app-grid,
 .notify-list,
-.balance-flow-list {
-  scrollbar-width: thin;
-  scrollbar-color: #cfd8e8 transparent;
+.balance-flow-list,
+.side-column .list-card ul,
+.bottom-tabs,
+.bottom-list .feed-list {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 .app-grid::-webkit-scrollbar,
 .notify-list::-webkit-scrollbar,
-.balance-flow-list::-webkit-scrollbar {
-  width: 6px;
-}
-
-.app-grid::-webkit-scrollbar-thumb,
-.notify-list::-webkit-scrollbar-thumb,
-.balance-flow-list::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: #cfd8e8;
+.balance-flow-list::-webkit-scrollbar,
+.side-column .list-card ul::-webkit-scrollbar,
+.bottom-tabs::-webkit-scrollbar,
+.bottom-list .feed-list::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
 }
 
 .balance-flow-item {
-  display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 58px;
-  padding: 10px 12px;
-  border: 1px solid #edf1f7;
-  border-radius: 8px;
-  background: #fbfcff;
-  box-shadow: 0 6px 18px rgba(21, 32, 51, 0.035);
-  transition: border-color 180ms ease, background 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+  padding: 10px 2px;
+  border: none;
+  border-bottom: 1px solid #f0f2f5;
+  border-radius: 0;
+  background: transparent;
+  transition: background 160ms ease;
+}
+
+.balance-flow-item:last-child {
+  border-bottom: none;
 }
 
 .balance-flow-item:hover {
-  border-color: #dfe7f4;
-  background: #ffffff;
-  transform: translateY(-1px);
-  box-shadow: 0 10px 24px rgba(21, 32, 51, 0.06);
+  background: #f8fafc;
+  border-radius: 8px;
 }
 
 .flow-mark {
-  width: 32px;
-  height: 32px;
-  border-radius: 8px;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
   display: grid;
   place-items: center;
 }
@@ -1001,17 +1000,40 @@ onBeforeUnmount(() => {
   background: #fff0f1;
 }
 
-.balance-flow-item.income .bag-body { fill: #28c57c; }
-.balance-flow-item.income .bag-neck { fill: #14a864; }
-.balance-flow-item.income .coin { fill: #ffd35a; }
-.balance-flow-item.income .yuan { fill: #ffffff; }
+.balance-flow-item.income .bag-body {
+  fill: #28c57c;
+}
 
-.balance-flow-item.expense .bag-body { fill: #ff6b75; }
-.balance-flow-item.expense .bag-neck { fill: #ef4756; }
-.balance-flow-item.expense .coin { fill: #ffc85a; }
-.balance-flow-item.expense .yuan { fill: #ffffff; }
+.balance-flow-item.income .bag-neck {
+  fill: #14a864;
+}
+
+.balance-flow-item.income .coin {
+  fill: #ffd35a;
+}
+
+.balance-flow-item.income .yuan {
+  fill: #ffffff;
+}
+
+.balance-flow-item.expense .bag-body {
+  fill: #ff6b75;
+}
+
+.balance-flow-item.expense .bag-neck {
+  fill: #ef4756;
+}
+
+.balance-flow-item.expense .coin {
+  fill: #ffc85a;
+}
+
+.balance-flow-item.expense .yuan {
+  fill: #ffffff;
+}
 
 .flow-main {
+  flex: 1;
   min-width: 0;
   display: grid;
   gap: 3px;
@@ -1035,7 +1057,9 @@ onBeforeUnmount(() => {
 }
 
 .flow-amount {
-  justify-self: end;
+  flex-shrink: 0;
+  margin-left: auto;
+  text-align: right;
   font-size: 15px;
   font-weight: 900;
   line-height: 1;
@@ -1043,8 +1067,13 @@ onBeforeUnmount(() => {
   font-variant-numeric: tabular-nums;
 }
 
-.balance-flow-item.income .flow-amount { color: #18b66e; }
-.balance-flow-item.expense .flow-amount { color: #ff4d4f; }
+.balance-flow-item.income .flow-amount {
+  color: #18b66e;
+}
+
+.balance-flow-item.expense .flow-amount {
+  color: #ff4d4f;
+}
 
 .profile-card {
   padding: 18px;
@@ -1052,16 +1081,18 @@ onBeforeUnmount(() => {
   grid-template-columns: auto 1fr auto;
   align-items: center;
   gap: 12px;
-  color: #fff;
+  color: #333;
   background:
     radial-gradient(circle at 12% 18%, rgba(255, 255, 255, 0.2), transparent 26%),
-    linear-gradient(135deg, #ee4d7a, #8b7bf7 50%, #5b8def);
+    linear-gradient(135deg, #ffffff, #ffffff 50%, #ffffff);
   overflow: hidden;
   min-height: 94px;
   min-width: 0;
 }
 
-.profile-card:active { transform: translateY(-1px) scale(0.995); }
+.profile-card:active {
+  transform: translateY(-1px) scale(0.995);
+}
 
 .profile-card .avatar {
   width: 58px;
@@ -1071,7 +1102,7 @@ onBeforeUnmount(() => {
   display: grid;
   place-items: center;
   border-radius: 50%;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #ffffff 0%, #ffffff 100%);
   color: #fff;
   font-weight: 900;
   overflow: hidden;
@@ -1085,7 +1116,8 @@ onBeforeUnmount(() => {
 }
 
 .profile-card .avatar .avatar-img {
-  width: 100%; height: 100%;
+  width: 100%;
+  height: 100%;
   object-fit: cover;
   border-radius: 50%;
 }
@@ -1095,12 +1127,17 @@ onBeforeUnmount(() => {
   line-height: 1;
   text-transform: uppercase;
   user-select: none;
+  color: #333;
 }
 
-.profile-card h2 { font-size: 20px; }
+.profile-card h2 {
+  font-size: 20px;
+}
 
 .profile-card p,
-.profile-card time { color: rgba(255, 255, 255, 0.82); }
+.profile-card time {
+  color: rgba(255, 255, 255, 0.82);
+}
 
 /* ========== 角色徽章 ========== */
 
@@ -1114,70 +1151,80 @@ onBeforeUnmount(() => {
   letter-spacing: 0.5px;
 }
 
-.role-badge.admin { background: linear-gradient(135deg, #ee4d7a, #ff7eb3); color: #fff; }
-.role-badge.agent { background: linear-gradient(135deg, #8b7bf7, #a78bfa); color: #fff; }
-.role-badge.user { background: rgba(255, 255, 255, 0.2); color: rgba(255, 255, 255, 0.9); }
+.role-badge.admin {
+  background: linear-gradient(135deg, #ee4d7a, #ff7eb3);
+  color: #fff;
+}
+
+.role-badge.agent {
+  background: linear-gradient(135deg, #8b7bf7, #a78bfa);
+  color: #fff;
+}
+
+.role-badge.user {
+  background: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.9);
+}
 
 /* ========== 折线图 ========== */
 
-.chart-stats-row {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
+.bottom-chart {
+  display: flex;
+  flex-direction: column;
   gap: 12px;
-  margin-bottom: 18px;
 }
 
-.chart-stat-item {
-  text-align: center;
-  padding: 12px 8px;
-  border: 1px solid rgba(223, 231, 244, 0.72);
-  border-radius: 8px;
-  background: #f9fafc;
-  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 240ms ease, border-color 240ms ease;
+.chart-section-title {
+  margin: 0;
+  color: var(--dash-muted);
+  font-size: 13px;
+  font-weight: 600;
 }
-
-.chart-stat-item:hover {
-  border-color: #d5deed;
-  transform: translateY(-2px);
-  box-shadow: 0 10px 22px rgba(21, 32, 51, 0.06);
-}
-.chart-stat-item:nth-child(1) { background: #fff3f7; }
-.chart-stat-item:nth-child(2) { background: #eff8f3; }
-.chart-stat-item:nth-child(3) { background: #f1eeff; }
-.chart-stat-item:nth-child(4) { background: #fff1f0; }
-
-.chart-stat-item strong { display: block; font-size: 22px; color: #152033; line-height: 1.3; font-variant-numeric: tabular-nums; }
-.chart-stat-item span { font-size: 12px; color: #9aa5b5; }
 
 .echarts-container {
   width: 100%;
-  height: 240px;
-  border-radius: 8px;
+  height: 280px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fafbff 0%, #f8fafc 100%);
+  border: 1px solid var(--dash-border);
 }
 
-.yearly-grid {
+.type-stat-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
 }
 
-.yearly-grid span {
-  padding: 14px;
-  border: 1px solid #e8eef8;
-  border-radius: 8px;
-  background: #f4f7ff;
-  color: #425066;
-  text-align: center;
-  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), background 240ms ease, box-shadow 240ms ease;
+.type-stat-card {
+  padding: 16px 18px;
+  border-radius: 12px;
+  border: 1px solid var(--dash-border);
+  background: #f8fafc;
+  text-align: left;
+  transition: border-color 180ms ease, box-shadow 180ms ease;
 }
 
-.yearly-grid span:hover {
-  transform: translateY(-2px);
-  background: #eef3ff;
-  box-shadow: 0 10px 22px rgba(91, 141, 239, 0.1);
+.type-stat-card:hover {
+  border-color: rgba(47, 109, 246, 0.22);
+  box-shadow: 0 4px 12px rgba(47, 109, 246, 0.08);
 }
 
-.yearly-grid strong { margin-right: 6px; color: #152033; }
+.type-stat-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dash-muted);
+}
+
+.type-stat-value {
+  display: block;
+  margin-top: 8px;
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--dash-primary);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
 
 .list-card ul {
   list-style: none;
@@ -1198,56 +1245,73 @@ onBeforeUnmount(() => {
   transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), color 240ms ease;
 }
 
-.list-card li:hover { color: #425066; transform: translateX(4px); }
+.list-card li:hover {
+  color: #425066;
+  transform: translateX(4px);
+}
 
 .list-card li::before {
   content: '';
   flex: 0 0 auto;
-  width: 5px; height: 5px;
+  width: 5px;
+  height: 5px;
   margin-top: 8px;
   border-radius: 50%;
   background: #dbe3f0;
 }
 
-.list-card li span { flex: 1 1 auto; min-width: 0; line-height: 1.7; }
-.list-card time { flex: 0 0 auto; color: #9aa5b5; }
+.list-card li span {
+  flex: 1 1 auto;
+  min-width: 0;
+  line-height: 1.7;
+}
+
+.list-card time {
+  flex: 0 0 auto;
+  color: #9aa5b5;
+}
 
 /* ========== 底部导航卡片 ========== */
 
 .bottom-card {
   grid-column: 1 / -1;
-  min-height: 246px;
+  min-height: 280px;
   max-height: none;
   overflow: visible;
-  margin-top: 4px;
-  padding: 20px 22px 24px;
+  margin-top: 0;
+  padding: 18px 20px 22px;
 }
 
 .bottom-tabs {
   display: flex;
-  gap: 6px;
-  padding-bottom: 14px;
-  border-bottom: 1px solid #e8edf4;
+  width: 100%;
+  gap: 4px;
+  padding: 4px;
   margin-bottom: 16px;
+  border-radius: 12px;
+  background: #f1f5f9;
 }
 
 .bottom-tabs button {
-  position: relative;
-  padding: 7px 18px;
-  border-radius: 999px;
-  color: #647184;
-  font-weight: 700;
-  font-size: 14px;
-  transition: color 240ms ease, background 240ms ease, transform 240ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 240ms ease;
+  flex: 1;
+  padding: 9px 10px;
+  border-radius: 9px;
+  color: var(--dash-muted);
+  font-weight: 600;
+  font-size: 13px;
+  text-align: center;
+  white-space: nowrap;
+  transition: color 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
 
-.bottom-tabs button:hover { color: #8b7bf7; background: #f6f3ff; }
-.bottom-tabs button:active { transform: scale(0.96); }
+.bottom-tabs button:hover {
+  color: var(--dash-text);
+}
 
 .bottom-tabs button.active {
-  color: #fff;
-  background: linear-gradient(135deg, #8b7bf7, #5b8def);
-  box-shadow: 0 6px 16px rgba(139, 123, 247, 0.22);
+  color: var(--dash-primary);
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(21, 32, 51, 0.08);
 }
 
 .bottom-content {
@@ -1255,47 +1319,93 @@ onBeforeUnmount(() => {
   animation: fadeSlideIn 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.bottom-content > .empty-hint {
+.bottom-content>.empty-hint {
   min-height: 132px;
 }
 
 @keyframes fadeSlideIn {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
-.bottom-list ul { list-style: none; display: grid; gap: 10px; }
-
-.bottom-list li {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 12px 14px;
-  border: 1px solid #edf1f7;
-  border-radius: 8px;
-  background: #fbfcff;
-  color: #647184;
-  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), color 240ms ease, border-color 240ms ease, background 240ms ease;
-}
-
-.bottom-list li:hover {
-  border-color: #dfe7f4;
+.feed-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--dash-border);
+  border-radius: 12px;
+  overflow: hidden;
   background: #fff;
-  color: #425066;
-  transform: translateX(2px);
 }
 
-.bottom-list li::before {
-  content: '';
-  flex: 0 0 auto;
-  width: 5px; height: 5px;
-  margin-top: 8px;
-  border-radius: 50%;
-  background: #dbe3f0;
+.feed-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid #f0f2f5;
+  transition: background 160ms ease;
 }
 
-.bottom-list li span { flex: 1 1 auto; min-width: 0; line-height: 1.7; }
-.bottom-list time { flex: 0 0 auto; color: #9aa5b5; }
+.feed-row:last-child {
+  border-bottom: none;
+}
+
+.feed-row:hover {
+  background: #f8fafc;
+}
+
+.feed-chip {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--dash-primary);
+  background: rgba(47, 109, 246, 0.1);
+}
+
+.feed-chip--batch {
+  color: var(--dash-muted);
+  background: #f1f5f9;
+}
+
+.feed-text {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--dash-text);
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feed-text--mono {
+  font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.feed-row time {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #9aa5b5;
+  white-space: nowrap;
+}
+
+.bottom-list .feed-list {
+  max-height: 320px;
+  overflow-y: auto;
+}
 
 /* ========== 普通用户 PC 首页 ========== */
 
@@ -1305,19 +1415,13 @@ onBeforeUnmount(() => {
   gap: 18px;
 }
 
-.regular-user-dashboard .desktop-overview {
-  border-radius: 12px;
+.regular-user-dashboard .dash-hero {
   padding: 20px 22px;
-  background:
-    linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(247, 250, 255, 0.96) 55%, rgba(255, 246, 250, 0.94)),
-    radial-gradient(circle at 94% 12%, rgba(47, 109, 246, 0.16), transparent 30%);
 }
 
 .regular-user-dashboard .apps-card,
 .regular-user-dashboard .bottom-card {
   height: var(--dashboard-main-row-height);
-  border-radius: 12px;
-  box-shadow: 0 16px 38px rgba(21, 32, 51, 0.065);
 }
 
 .regular-user-dashboard .apps-card {
@@ -1328,9 +1432,6 @@ onBeforeUnmount(() => {
   grid-column: 2 / -1;
   margin-top: 0;
   overflow: hidden;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(250, 252, 255, 0.96)),
-    radial-gradient(circle at 100% 0%, rgba(91, 141, 239, 0.12), transparent 30%);
 }
 
 .regular-user-dashboard .bottom-content {
@@ -1339,15 +1440,11 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
-.regular-user-dashboard .chart-stats-row {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
 .regular-user-dashboard .echarts-container {
-  height: min(210px, calc(var(--dashboard-main-row-height) - 176px));
+  height: min(220px, calc(var(--dashboard-main-row-height) - 120px));
 }
 
-.regular-user-dashboard .bottom-content > .empty-hint {
+.regular-user-dashboard .bottom-content>.empty-hint {
   min-height: 0;
   height: calc(var(--dashboard-main-row-height) - 164px);
 }
@@ -1355,7 +1452,10 @@ onBeforeUnmount(() => {
 /* ========== 响应式 ========== */
 
 @media (max-width: 1180px) {
-  .dash-grid { grid-template-columns: 1fr 1fr; }
+  .dash-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .dash-grid.regular-user-dashboard {
     grid-template-columns: 1fr 1fr;
   }
@@ -1375,22 +1475,29 @@ onBeforeUnmount(() => {
     height: 100%;
   }
 
-  .desktop-overview {
-    grid-template-columns: 1fr;
-    gap: 14px;
+  .dash-stat-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
-
-  .overview-action {
-    justify-self: start;
-  }
-
-  .dash-banner { border-radius: 10px; }
 }
 
 @media (max-width: 760px) {
+
   .dash-grid,
-  .side-column { grid-template-columns: 1fr; }
-  .dash-grid { padding: 14px; max-width: 100vw; box-sizing: border-box; gap: 14px; }
+  .side-column {
+    grid-template-columns: 1fr;
+  }
+
+  .dash-grid {
+    padding: 12px 14px 14px;
+    max-width: 100vw;
+    box-sizing: border-box;
+    gap: 14px;
+  }
+
+  .dash-grid:not(.regular-user-dashboard) {
+    padding-top: 10px;
+  }
+
   .dash-grid.regular-user-dashboard {
     grid-template-columns: 1fr;
   }
@@ -1401,7 +1508,7 @@ onBeforeUnmount(() => {
     height: auto;
   }
 
-  .regular-user-dashboard .bottom-content > .empty-hint {
+  .regular-user-dashboard .bottom-content>.empty-hint {
     height: auto;
     min-height: 132px;
   }
@@ -1415,8 +1522,19 @@ onBeforeUnmount(() => {
     grid-template-rows: auto;
     height: auto;
   }
-  .card { padding: 18px; min-width: 0; border-radius: 16px; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06); }
-  .card:hover { transform: none; box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06); }
+
+  .card {
+    padding: 18px;
+    min-width: 0;
+    border-radius: 16px;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+  }
+
+  .card:hover {
+    transform: none;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+  }
+
   .apps-card,
   .todo-card,
   .side-column .profile-card,
@@ -1425,8 +1543,21 @@ onBeforeUnmount(() => {
     min-height: auto;
   }
 
-  .desktop-overview,
-  .dash-banner { display: none; }
+  .dash-hero {
+    flex-direction: column;
+    padding: 16px;
+    gap: 14px;
+  }
+
+  .dash-hero-text {
+    display: none;
+  }
+
+  .dash-stat-grid {
+    flex: none;
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 
   /* ---- Mobile Hero Banner ---- */
   .mobile-hero {
@@ -1470,7 +1601,7 @@ onBeforeUnmount(() => {
     padding: 8px 24px;
     border-radius: 20px;
     background: #fff;
-    color: #2563eb;
+    color: #2f6df6;
     font-size: 13px;
     font-weight: 700;
     border: none;
@@ -1511,44 +1642,37 @@ onBeforeUnmount(() => {
   }
 
   .app-item {
-    grid-template-columns: 1fr;
-    justify-items: center;
-    min-height: auto;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    text-align: center;
-    box-shadow: none;
-  }
-
-  .app-item:hover {
-    background: transparent;
-    box-shadow: none;
-    transform: none;
+    min-height: 80px;
+    padding: 10px 6px;
+    border: 1px solid var(--dash-border);
+    background: #f8fafc;
   }
 
   .app-icon {
-    width: 54px;
-    height: 54px;
-    border-radius: 16px;
+    width: 48px;
+    height: 48px;
+    border-radius: 14px;
   }
 
-  .app-item:hover .app-icon {
-    transform: none;
+  .app-icon img {
+    width: 34px;
+    height: 34px;
   }
 
   .app-item strong {
-    font-size: 12px;
-    color: #425066;
+    font-size: 11px;
     white-space: normal;
   }
 
-  .app-arrow {
-    display: none;
+  .card-title h2 {
+    font-size: 16px;
   }
 
-  .card-title h2 { font-size: 16px; }
-  .card-title button { font-size: 13px; color: #9aa5b5; font-weight: 600; }
+  .card-title button {
+    font-size: 13px;
+    color: #9aa5b5;
+    font-weight: 600;
+  }
 
   /* ---- Notifications mobile ---- */
   .todo-card {
@@ -1557,33 +1681,28 @@ onBeforeUnmount(() => {
     max-height: none;
     overflow: visible;
   }
+
   .notify-list {
     max-height: 420px;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     padding: 0;
   }
+
   .tab-count {
     display: inline;
     font-size: 12px;
     opacity: 0.9;
   }
-  .todo-tabs button { font-size: 13px; padding: 4px 8px; gap: 4px; }
 
-  .notify-list { gap: 10px; }
-
-  .notify-list li {
-    padding: 14px 16px;
-    border-radius: 14px;
-    background: #f8fafc;
-    border: 1px solid #eef1f5;
+  .todo-tabs button {
+    font-size: 13px;
+    padding: 4px 8px;
+    gap: 4px;
   }
 
-  .notify-list li:hover { background: #f4f7fb; transform: none; }
-
   .notify-list li.ntype-recharge {
-    background: linear-gradient(135deg, #eef8ff, #f0faff);
-    border-color: #d6ecfa;
+    background: rgba(47, 109, 246, 0.04);
   }
 
   .notify-icon {
@@ -1607,28 +1726,54 @@ onBeforeUnmount(() => {
     font-size: 13px;
   }
 
-  .notify-time { font-size: 12px; }
+  .notify-time {
+    font-size: 12px;
+  }
 
-  .chart-stats-row,
-  .yearly-grid { grid-template-columns: repeat(2, 1fr); }
+  .type-stat-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 
-  .list-card li { align-items: flex-start; }
-  .list-card li span { overflow-wrap: anywhere; word-break: normal; }
-  .list-card time { font-size: 12px; }
+  .type-stat-value {
+    font-size: 18px;
+  }
+
+  .feed-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    align-items: flex-start;
+  }
+
+  .feed-row time {
+    grid-column: 1 / -1;
+    font-size: 11px;
+  }
+
+  .list-card li {
+    align-items: flex-start;
+  }
+
+  .list-card li span {
+    overflow-wrap: anywhere;
+    word-break: normal;
+  }
+
+  .list-card time {
+    font-size: 12px;
+  }
 
   .balance-flow-item {
-    grid-template-columns: 30px minmax(0, 1fr) auto;
     gap: 9px;
+    padding: 10px 0;
   }
 
   .flow-amount {
-    grid-column: auto;
-    justify-self: end;
-    margin-top: 0;
     font-size: 14px;
   }
 
-  .side-column { overflow: visible; }
+  .side-column {
+    overflow: visible;
+  }
 
   .side-column .list-card {
     display: flex;
@@ -1641,7 +1786,9 @@ onBeforeUnmount(() => {
     padding: 0;
   }
 
-  .profile-card { border-radius: 16px; }
+  .profile-card {
+    border-radius: 16px;
+  }
 
   .bottom-tabs {
     gap: 4px;
@@ -1657,7 +1804,13 @@ onBeforeUnmount(() => {
     flex-shrink: 0;
   }
 
-  .bottom-list li span { overflow-wrap: anywhere; word-break: normal; }
-  .bottom-list time { font-size: 12px; }
+  .bottom-list li span {
+    overflow-wrap: anywhere;
+    word-break: normal;
+  }
+
+  .bottom-list time {
+    font-size: 12px;
+  }
 }
 </style>

@@ -15,12 +15,21 @@ function applyUserFilter(query, userIds, column = 'user_id') {
 const Task = {
   // ========== 订单批次 ==========
 
-  async listBatches({ userIds, page = 1, pageSize = 20, status, batch_no }) {
+  async listBatches({ userIds, page = 1, pageSize = 20, status, batch_no, agent_id, start_date, end_date }) {
     const offset = (page - 1) * pageSize
     const query = db('order_batches')
-    applyUserFilter(query, userIds)
+
+    if (agent_id) {
+      const subIds = await db('users').where({ referred_by: agent_id }).pluck('id')
+      subIds.push(Number(agent_id))
+      query.whereIn('user_id', subIds)
+    } else {
+      applyUserFilter(query, userIds)
+    }
     if (status) query.andWhere({ status })
     if (batch_no) query.andWhere('batch_no', 'like', `%${batch_no}%`)
+    if (start_date) query.where('created_at', '>=', `${start_date} 00:00:00`)
+    if (end_date) query.where('created_at', '<=', `${end_date} 23:59:59`)
 
     const rows = await query.clone()
       .orderBy('created_at', 'desc')
@@ -71,8 +80,16 @@ const Task = {
       const userIdSet = [...new Set(rows.map(r => r.user_id).filter(Boolean))]
       const userMap = {}
       if (userIdSet.length > 0) {
-        const users = await db('users').whereIn('id', userIdSet).select('id', 'username', 'nickname')
+        const users = await db('users').whereIn('id', userIdSet).select('id', 'username', 'nickname', 'referred_by')
         for (const u of users) userMap[u.id] = u
+      }
+
+      // 查找代理信息
+      const agentIds = [...new Set(Object.values(userMap).map(u => u.referred_by).filter(Boolean))]
+      const agentMap = {}
+      if (agentIds.length > 0) {
+        const agents = await db('users').whereIn('id', agentIds).select('id', 'username', 'nickname')
+        for (const a of agents) agentMap[a.id] = a
       }
 
       for (const row of rows) {
@@ -90,6 +107,13 @@ const Task = {
         const u = userMap[row.user_id]
         row.username = u?.username || null
         row.nickname = u?.nickname || null
+        if (u?.referred_by && agentMap[u.referred_by]) {
+          row.agent_id = u.referred_by
+          row.agent_name = agentMap[u.referred_by].nickname || agentMap[u.referred_by].username
+        } else {
+          row.agent_id = null
+          row.agent_name = null
+        }
       }
     }
 
@@ -248,13 +272,37 @@ const Task = {
 
   // ========== 统计 ==========
 
-  async getStats(userIds) {
+  async getStats(userIds, { agent_id, start_date, end_date } = {}) {
+    const applyFilters = (q, col = 'user_id') => {
+      if (agent_id) {
+        q._agentFilterApplied = true
+      } else {
+        applyUserFilter(q, userIds, col)
+      }
+      if (start_date) q.where('created_at', '>=', `${start_date} 00:00:00`)
+      if (end_date) q.where('created_at', '<=', `${end_date} 23:59:59`)
+      return q
+    }
+
+    let agentSubIds = null
+    if (agent_id) {
+      const subs = await db('users').where({ referred_by: agent_id }).pluck('id')
+      subs.push(Number(agent_id))
+      agentSubIds = subs
+    }
+
     const batchQuery = db('order_batches')
-    applyUserFilter(batchQuery, userIds)
-    const [batchCount] = await batchQuery.count('id as total')
+    if (agentSubIds) batchQuery.whereIn('user_id', agentSubIds)
+    else applyUserFilter(batchQuery, userIds)
+    if (start_date) batchQuery.where('created_at', '>=', `${start_date} 00:00:00`)
+    if (end_date) batchQuery.where('created_at', '<=', `${end_date} 23:59:59`)
+    const [batchCount] = await batchQuery.clone().count('id as total')
 
     const orderQuery = db('orders')
-    applyUserFilter(orderQuery, userIds)
+    if (agentSubIds) orderQuery.whereIn('user_id', agentSubIds)
+    else applyUserFilter(orderQuery, userIds)
+    if (start_date) orderQuery.where('created_at', '>=', `${start_date} 00:00:00`)
+    if (end_date) orderQuery.where('created_at', '<=', `${end_date} 23:59:59`)
     const [orderCount] = await orderQuery.clone().count('id as total')
 
     const typeStats = await orderQuery.clone()
@@ -262,7 +310,6 @@ const Task = {
       .count('id as count')
       .groupBy('target_type')
 
-    // 增加产品名称
     const ttList = typeStats.map(t => t.target_type).filter(Boolean)
     if (ttList.length > 0) {
       const prods = await db('products').whereIn('target_type', ttList).select('target_type', 'name')
@@ -272,22 +319,26 @@ const Task = {
     }
 
     const statusQuery = db('orders')
-    applyUserFilter(statusQuery, userIds)
+    if (agentSubIds) statusQuery.whereIn('user_id', agentSubIds)
+    else applyUserFilter(statusQuery, userIds)
+    if (start_date) statusQuery.where('created_at', '>=', `${start_date} 00:00:00`)
+    if (end_date) statusQuery.where('created_at', '<=', `${end_date} 23:59:59`)
     const statusStats = await statusQuery
       .select('order_status')
       .count('id as count')
       .groupBy('order_status')
 
-    // 余额：如果是单用户就显示，否则显示汇总
     let balance = 0
     if (userIds && userIds.length === 1) {
       const b = await db('balance_accounts').where({ user_id: userIds[0] }).first()
       balance = b?.available_amount || 0
     }
 
-    // 累计消费
     const spentQuery = db('order_batches')
-    applyUserFilter(spentQuery, userIds)
+    if (agentSubIds) spentQuery.whereIn('user_id', agentSubIds)
+    else applyUserFilter(spentQuery, userIds)
+    if (start_date) spentQuery.where('created_at', '>=', `${start_date} 00:00:00`)
+    if (end_date) spentQuery.where('created_at', '<=', `${end_date} 23:59:59`)
     const [spentResult] = await spentQuery.sum('estimated_amount as total_spent')
 
     return {

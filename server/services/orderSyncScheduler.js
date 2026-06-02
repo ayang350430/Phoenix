@@ -289,7 +289,8 @@ async function refreshBatchStatuses() {
           SUM(CASE WHEN order_status IN ('running','processing') THEN 1 ELSE 0 END) as processing_count,
           SUM(CASE WHEN order_status = 'completed' THEN 1 ELSE 0 END) as succeeded_count,
           SUM(CASE WHEN order_status = 'failed' THEN 1 ELSE 0 END) as failed_count,
-          SUM(CASE WHEN order_status = 'refunded' THEN 1 ELSE 0 END) as refunded_count
+          SUM(CASE WHEN order_status = 'refunded' THEN 1 ELSE 0 END) as refunded_count,
+          SUM(CASE WHEN order_status = 'refunding' THEN 1 ELSE 0 END) as refunding_count
         `))
         .first()
 
@@ -299,6 +300,7 @@ async function refreshBatchStatuses() {
       const succeeded = Number(stats.succeeded_count)
       const failed = Number(stats.failed_count)
       const refunded = Number(stats.refunded_count)
+      const refunding = Number(stats.refunding_count)
       const pending = Number(stats.pending_count)
       const processing = Number(stats.processing_count)
       const finished = succeeded + failed + refunded
@@ -309,6 +311,8 @@ async function refreshBatchStatuses() {
         else if (failed + refunded === total) newStatus = 'failed'
         else if (failed > 0 || refunded > 0) newStatus = 'partial_completed'
         else newStatus = 'completed'
+      } else if (refunding > 0) {
+        newStatus = 'processing'
       } else if (processing > 0 || succeeded > 0) {
         newStatus = 'processing'
       }

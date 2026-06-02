@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onBeforeUnmount, provide, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onBeforeUnmount, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElNotification, ElMessageBox } from 'element-plus'
 import { House, Search, ShoppingCart, Tickets, UserFilled } from '@element-plus/icons-vue'
@@ -133,6 +133,63 @@ const displayActiveNav = computed(() => {
   if (route.path === '/embed-guide') return '嵌入指南'
   return activeNav.value
 })
+
+const navScrollRef = ref(null)
+
+/** 顶栏导航横向滚动：点右侧项向左滚，点左侧项向右滚 */
+function scrollNavItemIntoView(button) {
+  const scroller = navScrollRef.value
+  if (!scroller || !button) return
+
+  const maxScroll = scroller.scrollWidth - scroller.clientWidth
+  if (maxScroll <= 0) return
+
+  const scrollLeft = scroller.scrollLeft
+  const viewW = scroller.clientWidth
+  const scrollerRect = scroller.getBoundingClientRect()
+  const btnRect = button.getBoundingClientRect()
+  const btnCenterRatio = (btnRect.left + btnRect.width / 2 - scrollerRect.left) / viewW
+  const step = Math.max(Math.round(viewW * 0.42), 100)
+
+  let target
+  if (btnCenterRatio > 0.5) {
+    target = scrollLeft + step
+  } else {
+    target = scrollLeft - step
+  }
+
+  scroller.scrollTo({
+    left: Math.max(0, Math.min(target, maxScroll)),
+    behavior: 'smooth'
+  })
+}
+
+function onNavClick(nav, event) {
+  scrollNavItemIntoView(event.currentTarget)
+  handleNav(nav)
+}
+
+function scrollActiveNavIntoView() {
+  nextTick(() => {
+    const scroller = navScrollRef.value
+    if (!scroller) return
+    const active = scroller.querySelector('.ws-nav button.active')
+    if (!active) return
+
+    const maxScroll = scroller.scrollWidth - scroller.clientWidth
+    if (maxScroll <= 0) return
+
+    const btnLeft = active.offsetLeft
+    const btnWidth = active.offsetWidth
+    const viewW = scroller.clientWidth
+    const target = btnLeft - (viewW - btnWidth) / 2
+
+    scroller.scrollTo({
+      left: Math.max(0, Math.min(target, maxScroll)),
+      behavior: 'smooth'
+    })
+  })
+}
 
 function handleNav(nav) {
   if (nav === '权限管理') { router.push('/admin'); return }
@@ -432,6 +489,7 @@ onMounted(() => {
     pollingOrderNo.value = pendingOrder
     startPolling(pendingOrder)
   }
+  scrollActiveNavIntoView()
 })
 
 watch(isAnyOverlayOpen, (open) => {
@@ -442,6 +500,14 @@ watch(isAnyOverlayOpen, (open) => {
 watch(isRegularUser, (active) => {
   document.body.classList.toggle('has-mobile-user-tabbar', active)
 }, { immediate: true })
+
+watch(() => route.path, () => {
+  scrollActiveNavIntoView()
+})
+
+watch(navs, () => {
+  scrollActiveNavIntoView()
+})
 
 onBeforeUnmount(() => {
   stopPolling()
@@ -486,24 +552,42 @@ provide('workspace', {
       <span>现代数字化工作台</span>
     </div>
     <header class="ws-topbar">
-      <a class="ws-brand" href="/">
-        <img :src="logoSvg" alt="Phoenix" />
-        <strong>工作桌面</strong>
-      </a>
-      <nav class="ws-nav" aria-label="Main navigation">
-        <button v-for="nav in navs" :key="nav" type="button" :class="{ active: displayActiveNav === nav }"
-          @click="handleNav(nav)">{{ nav }}</button>
-      </nav>
-      <button v-if="!isRegularUser" type="button" class="mobile-menu-btn" @click="showMobileNav = !showMobileNav"
-        :class="{ open: showMobileNav }">
-        <span /><span /><span />
-      </button>
+      <div class="ws-topbar-start">
+        <a class="ws-brand" href="/">
+          <span class="ws-brand-mark">
+            <img :src="logoSvg" alt="Phoenix" />
+          </span>
+          <strong>工作桌面</strong>
+        </a>
+        <nav ref="navScrollRef" class="ws-nav-scroll" aria-label="Main navigation">
+          <div class="ws-nav">
+            <button
+              v-for="nav in navs"
+              :key="nav"
+              type="button"
+              :class="{ active: displayActiveNav === nav }"
+              @click="onNavClick(nav, $event)"
+            >{{ nav }}</button>
+          </div>
+        </nav>
+        <button
+          v-if="!isRegularUser"
+          type="button"
+          class="mobile-menu-btn"
+          :class="{ open: showMobileNav }"
+          aria-label="打开菜单"
+          @click="showMobileNav = !showMobileNav"
+        >
+          <span /><span /><span />
+        </button>
+      </div>
       <div class="ws-actions">
-        <div class="balance-pill" @click="openRecharge">
+        <div class="balance-pill" role="button" tabindex="0" @click="openRecharge" @keyup.enter="openRecharge">
           <span class="balance-label">余额</span>
           <strong class="balance-value">¥{{ balance.toFixed(2) }}</strong>
           <span class="recharge-btn">充值</span>
         </div>
+        <div class="ws-toolbar">
         <button type="button" class="topbar-btn" @click="toggleFullscreen" :title="isFullscreen ? '退出全屏' : '全屏'">
           <svg v-if="!isFullscreen" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
             stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -529,10 +613,11 @@ provide('workspace', {
             <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
           </svg>
         </button>
-        <button type="button" class="avatar avatar-button" @click="showUserDrawer = true">
+        <button type="button" class="avatar avatar-button" @click="showUserDrawer = true" title="用户中心">
           <img v-if="userAvatar" :src="userAvatar" :alt="userName" class="avatar-img" />
           <span v-else class="avatar-initial">{{ userInitial }}</span>
         </button>
+        </div>
       </div>
     </header>
 
@@ -573,6 +658,13 @@ provide('workspace', {
                   stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <circle cx="12" cy="12" r="10" />
                   <polyline points="12 6 12 12 16 14" />
+                </svg>
+                <svg v-else-if="nav === '下单记录'" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 2 14 8 20 8" />
+                  <line x1="16" y1="13" x2="8" y2="13" />
+                  <line x1="16" y1="17" x2="8" y2="17" />
                 </svg>
                 <svg v-else-if="nav === '商品管理'" width="18" height="18" viewBox="0 0 24 24" fill="none"
                   stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -638,52 +730,55 @@ provide('workspace', {
       </button>
     </nav>
 
-    <!-- 页面内容插槽 -->
-    <slot />
+    <!-- 页面内容（顶栏 fixed，此处留出顶部高度） -->
+    <div class="ws-body">
+      <slot />
+    </div>
 
     <!-- 用户信息抽屉 -->
     <Transition name="drawer-fade">
       <div v-if="showUserDrawer" class="drawer-mask" @click.self="showUserDrawer = false">
         <aside class="user-drawer">
-          <button type="button" class="drawer-close" @click="showUserDrawer = false">×</button>
-          <div class="drawer-hero">
-            <div class="drawer-head">
-              <div class="avatar large drawer-avatar">
-                <img v-if="userAvatar" :src="userAvatar" :alt="userName" class="avatar-img" />
-                <span v-else class="avatar-initial">{{ userInitial }}</span>
-              </div>
-              <div class="drawer-head-copy">
-                <span class="drawer-eyebrow">用户中心</span>
-                <h2>{{ userName }}</h2>
-                <p>{{ currentUser?.username }}</p>
-              </div>
-            </div>
+          <header class="ud-top">
+            <h2 class="ud-title">用户中心</h2>
+            <button type="button" class="ud-close" aria-label="关闭" @click="showUserDrawer = false">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </header>
 
-            <div class="drawer-badges">
-              <span class="drawer-badge" :class="isAdmin ? 'admin' : isAgent ? 'agent' : 'user'">{{ roleLabel }}</span>
-              <span class="drawer-badge muted">账号状态 · 正常</span>
-              <span class="drawer-badge muted">余额 ¥{{ balance.toFixed(2) }}</span>
+          <div class="ud-profile">
+            <div class="avatar large ud-avatar">
+              <img v-if="userAvatar" :src="userAvatar" :alt="userName" class="avatar-img" />
+              <span v-else class="avatar-initial">{{ userInitial }}</span>
+            </div>
+            <div class="ud-profile-text">
+              <strong class="ud-name">{{ userName }}</strong>
+              <span class="ud-username">@{{ currentUser?.username }}</span>
+              <span class="ud-role" :class="isAdmin ? 'admin' : isAgent ? 'agent' : 'user'">{{ roleLabel }}</span>
             </div>
           </div>
 
-          <div class="drawer-section">
+          <div class="ud-balance-card">
+            <div class="ud-balance-main">
+              <span class="ud-balance-label">账户余额</span>
+              <strong class="ud-balance-value">¥{{ balance.toFixed(2) }}</strong>
+            </div>
+            <button
+              type="button"
+              class="ud-recharge-btn"
+              @click="showUserDrawer = false; openRecharge()"
+            >充值</button>
+          </div>
+
+          <div class="drawer-section ud-info">
             <dl class="user-detail">
               <div>
                 <dt>账号</dt>
                 <dd>{{ currentUser?.username }}</dd>
               </div>
               <div>
-                <dt>角色</dt>
-                <dd><span class="role-badge" :class="isAdmin ? 'admin' : isAgent ? 'agent' : 'user'">{{ roleLabel
-                    }}</span></dd>
-              </div>
-              <div>
-                <dt>账户余额</dt>
-                <dd>¥{{ balance.toFixed(2) }}</dd>
-              </div>
-              <div>
                 <dt>账号状态</dt>
-                <dd>正常</dd>
+                <dd><span class="ud-status-ok">正常</span></dd>
               </div>
             </dl>
           </div>
@@ -719,21 +814,17 @@ provide('workspace', {
             </div>
           </div>
 
-          <div class="drawer-actions">
-            <button type="button" class="drawer-action primary"
-              @click="showUserDrawer = false; openRecharge()">充值</button>
-            <button v-if="isAgent" type="button" class="drawer-action team-btn"
-              @click="showUserDrawer = false; openTeam()">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-                stroke-linecap="round" stroke-linejoin="round">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                <circle cx="9" cy="7" r="4" />
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-              </svg>
+          <div class="ud-footer">
+            <button
+              v-if="isAgent"
+              type="button"
+              class="ud-team-btn"
+              @click="showUserDrawer = false; openTeam()"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
               我的团队
             </button>
-            <button type="button" class="drawer-action secondary" @click="logout()">退出登录</button>
+            <button type="button" class="ud-logout-btn" @click="logout()">退出登录</button>
           </div>
         </aside>
       </div>
@@ -867,15 +958,32 @@ provide('workspace', {
   --motion-fast: 160ms;
   --motion-base: 240ms;
   --motion-soft: cubic-bezier(0.22, 1, 0.36, 1);
+  --ws-primary: #2f6df6;
+  --ws-text: #152033;
+  --ws-text-2: #425066;
+  --ws-text-3: #8a95a8;
+  --ws-border: #e8eef7;
+  --ws-sitebar-h: 0px;
+  --ws-topbar-h: 64px;
   min-height: 100vh;
   background: #f4f7fb;
-  color: #152033;
-  overflow-x: hidden;
+  color: var(--ws-text);
+  overflow-x: clip;
   max-width: 100vw;
+}
+
+.ws-body {
+  padding-top: calc(var(--ws-sitebar-h) + var(--ws-topbar-h));
+  min-height: calc(100vh - var(--ws-sitebar-h) - var(--ws-topbar-h));
 }
 
 .site-bar {
   display: none;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 110;
 }
 
 .mobile-user-tabbar {
@@ -889,115 +997,177 @@ provide('workspace', {
 /* ========== 顶栏 ========== */
 
 .ws-topbar {
-  min-height: 72px;
-  margin: 12px 16px 0;
-  padding: 0 18px;
+  position: fixed;
+  top: var(--ws-sitebar-h);
+  left: 0;
+  right: 0;
+  z-index: 100;
+  min-height: var(--ws-topbar-h);
+  box-sizing: border-box;
+  padding: 0 20px;
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 22px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #ee4d7a 0%, #8b7bf7 52%, #5b8def 100%);
-  color: #fff;
-  box-shadow: 0 18px 42px rgba(139, 123, 247, 0.24);
+  gap: 16px;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--ws-border);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.9), 0 4px 20px rgba(21, 32, 51, 0.04);
+}
+
+.ws-topbar-start {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 16px;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
 }
 
 .ws-brand {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  transition: transform var(--motion-base) var(--motion-soft), opacity var(--motion-base) ease;
+  flex-shrink: 0;
+  text-decoration: none;
+  color: inherit;
+  transition: opacity var(--motion-base) ease;
 }
 
 .ws-brand:hover {
-  transform: translateY(-1px);
+  opacity: 0.88;
+}
+
+.ws-brand-mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f3f0ff, #eef3ff);
+  border: 1px solid #e4ecff;
+  box-shadow: 0 4px 12px rgba(47, 109, 246, 0.1);
 }
 
 .ws-brand img {
-  width: 38px;
-  height: 38px;
+  width: 26px;
+  height: 26px;
 }
 
 .ws-brand strong {
-  font-size: 24px;
-  letter-spacing: 3px;
+  font-size: 17px;
+  font-weight: 900;
+  letter-spacing: -0.2px;
+  color: var(--ws-text);
+  white-space: nowrap;
+}
+
+.ws-nav-scroll {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  touch-action: pan-x;
+  mask-image: linear-gradient(90deg, #000 calc(100% - 20px), transparent);
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 20px), transparent);
+}
+
+.ws-nav-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .ws-nav {
-  display: flex;
-  gap: 24px;
-  align-self: stretch;
+  display: inline-flex;
   align-items: center;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+  gap: 4px;
+  width: max-content;
+  min-width: min-content;
+  padding: 2px 4px 2px 8px;
+  box-sizing: border-box;
 }
 
 .ws-nav button {
   position: relative;
-  height: 100%;
   display: inline-flex;
   align-items: center;
-  color: rgba(255, 255, 255, 0.82);
+  justify-content: center;
+  flex-shrink: 0;
+  min-height: 36px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--ws-text-2);
+  font-size: 13px;
   font-weight: 700;
-  transition: color var(--motion-base) ease, transform var(--motion-base) var(--motion-soft);
-}
-
-.ws-nav button::after {
-  content: '';
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  height: 3px;
-  border-radius: 999px 999px 0 0;
-  background: #fff;
-  transform: scaleX(0);
-  transform-origin: center;
-  transition: transform var(--motion-base) var(--motion-soft), opacity var(--motion-base) ease;
-  opacity: 0;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color var(--motion-base) ease,
+    background var(--motion-base) ease,
+    box-shadow var(--motion-base) ease;
 }
 
 .ws-nav button:hover {
-  color: #fff;
-  transform: translateY(-1px);
+  color: var(--ws-primary);
+  background: #f5f8ff;
 }
 
 .ws-nav button.active {
   color: #fff;
-}
-
-.ws-nav button.active::after {
-  transform: scaleX(1);
-  opacity: 1;
+  background: var(--ws-primary);
+  box-shadow: 0 4px 14px rgba(47, 109, 246, 0.28);
 }
 
 .ws-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.ws-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 12px;
+  background: #f6f8fc;
+  border: 1px solid var(--ws-border);
 }
 
 .topbar-btn {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   display: grid;
   place-items: center;
-  border-radius: 50%;
-  color: rgba(255, 255, 255, 0.82);
-  background: rgba(255, 255, 255, 0.12);
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 9px;
+  border: none;
+  color: var(--ws-text-2);
+  background: transparent;
   cursor: pointer;
-  transition: color var(--motion-fast) ease, transform var(--motion-base) var(--motion-soft), background var(--motion-base) ease, box-shadow var(--motion-base) ease;
+  transition:
+    color var(--motion-fast) ease,
+    background var(--motion-base) ease,
+    box-shadow var(--motion-base) ease;
 }
 
 .topbar-btn:hover {
-  color: #fff;
-  background: rgba(255, 255, 255, 0.22);
-  transform: translateY(-2px);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.15);
+  color: var(--ws-primary);
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(47, 109, 246, 0.12);
 }
 
 .topbar-btn:active {
-  transform: translateY(0) scale(0.92);
-  background: rgba(255, 255, 255, 0.3);
+  transform: scale(0.96);
 }
 
 /* ========== 头像 ========== */
@@ -1008,7 +1178,7 @@ provide('workspace', {
   display: grid;
   place-items: center;
   border-radius: 50%;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: #fff;
   color: #fff;
   font-weight: 900;
   overflow: hidden;
@@ -1027,17 +1197,19 @@ provide('workspace', {
   line-height: 1;
   text-transform: uppercase;
   user-select: none;
+  color: #111827;
 }
 
 .avatar-button {
   cursor: pointer;
-  border: 2px solid rgba(255, 255, 255, 0.6);
+  border: 2px solid var(--ws-border);
+  box-shadow: 0 2px 8px rgba(21, 32, 51, 0.06);
 }
 
 .avatar-button:hover {
-  transform: translateY(-2px) scale(1.04);
-  box-shadow: 0 8px 20px rgba(21, 32, 51, 0.18);
-  border-color: rgba(255, 255, 255, 0.9);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(47, 109, 246, 0.15);
+  border-color: #c4d4ff;
 }
 
 .avatar-button:active {
@@ -1062,38 +1234,47 @@ provide('workspace', {
 .balance-pill {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 6px 4px 12px;
+  gap: 8px;
+  padding: 6px 6px 6px 14px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.18);
-  border: 1px solid rgba(255, 255, 255, 0.32);
+  background: #f5f8ff;
+  border: 1px solid #e4ecff;
   cursor: pointer;
-  transition: background var(--motion-base) ease, transform var(--motion-base) var(--motion-soft);
+  transition: background var(--motion-base) ease, border-color var(--motion-base) ease, box-shadow var(--motion-base) ease;
 }
 
 .balance-pill:hover {
-  background: rgba(255, 255, 255, 0.28);
-  transform: translateY(-1px);
+  background: #eef3ff;
+  border-color: #c4d4ff;
+  box-shadow: 0 4px 14px rgba(47, 109, 246, 0.1);
 }
 
 .balance-label {
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.78);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ws-text-3);
+  letter-spacing: 0.2px;
 }
 
 .balance-value {
   font-size: 14px;
-  color: #fff;
+  font-weight: 900;
+  color: var(--ws-text);
+  font-variant-numeric: tabular-nums;
 }
 
 .recharge-btn {
-  padding: 3px 10px;
+  padding: 6px 14px;
   border-radius: 999px;
-  background: #fff;
-  color: #8b7bf7;
+  background: var(--ws-primary);
+  color: #fff;
   font-size: 12px;
   font-weight: 800;
-  transition: transform var(--motion-fast) var(--motion-soft);
+  transition: background var(--motion-fast) ease, transform var(--motion-fast) var(--motion-soft);
+}
+
+.recharge-btn:hover {
+  background: #2558d4;
 }
 
 .balance-pill:hover .recharge-btn {
@@ -1113,18 +1294,247 @@ provide('workspace', {
 }
 
 .user-drawer {
-  width: min(420px, 92vw);
+  width: min(400px, 92vw);
   height: 100%;
-  padding: 18px;
+  padding: 20px 20px 24px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  background:
-    radial-gradient(circle at top right, rgba(91, 141, 239, 0.18), transparent 36%),
-    linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
-  box-shadow: -28px 0 60px rgba(21, 32, 51, 0.22);
-  border-left: 1px solid rgba(223, 229, 236, 0.85);
+  gap: 16px;
+  background: #fff;
+  box-shadow: -16px 0 48px rgba(21, 32, 51, 0.12);
+  border-left: 1px solid #e8edf4;
   overflow-y: auto;
+  padding-top: 80px;
+}
+
+.ud-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ud-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: #152033;
+}
+
+.ud-close {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  color: #647184;
+  background: #f1f5f9;
+  transition: background 180ms ease, color 180ms ease;
+}
+
+.ud-close:hover {
+  color: #152033;
+  background: #e8edf4;
+}
+
+.ud-profile {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.ud-avatar {
+  flex-shrink: 0;
+  border: 2px solid #fff;
+  box-shadow: 0 4px 16px rgba(47, 109, 246, 0.15);
+}
+
+.ud-profile-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.ud-name {
+  font-size: 20px;
+  font-weight: 700;
+  color: #152033;
+  line-height: 1.25;
+}
+
+.ud-username {
+  font-size: 13px;
+  color: #8a95a8;
+  word-break: break-all;
+}
+
+.ud-role {
+  display: inline-flex;
+  margin-top: 2px;
+  padding: 3px 9px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ud-role.admin {
+  color: #be123c;
+  background: #fff1f2;
+}
+
+.ud-role.agent {
+  color: var(--ws-primary);
+  background: rgba(47, 109, 246, 0.1);
+}
+
+.ud-role.user {
+  color: #15803d;
+  background: #ecfdf3;
+}
+
+.ud-balance-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(47, 109, 246, 0.08), rgba(47, 109, 246, 0.02));
+  border: 1px solid rgba(47, 109, 246, 0.14);
+}
+
+.ud-balance-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #647184;
+}
+
+.ud-balance-value {
+  display: block;
+  margin-top: 4px;
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--ws-primary);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.ud-recharge-btn {
+  flex-shrink: 0;
+  height: 40px;
+  padding: 0 20px;
+  border-radius: 10px;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  background: var(--ws-primary);
+  box-shadow: 0 8px 20px rgba(47, 109, 246, 0.28);
+  transition: transform 180ms ease, box-shadow 180ms ease;
+}
+
+.ud-recharge-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 24px rgba(47, 109, 246, 0.32);
+}
+
+.drawer-section {
+  padding: 4px 0;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: none;
+  border: none;
+}
+
+.drawer-section.ud-info {
+  padding: 0;
+}
+
+.user-detail {
+  display: grid;
+  gap: 0;
+  border: 1px solid #e8edf4;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.user-detail div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 13px 16px;
+  border-radius: 0;
+  background: #fff;
+  border-bottom: 1px solid #f0f2f5;
+}
+
+.user-detail div:last-child {
+  border-bottom: none;
+}
+
+.user-detail dt {
+  font-size: 13px;
+  color: #8a95a8;
+  font-weight: 500;
+}
+
+.user-detail dd {
+  font-size: 14px;
+  color: #152033;
+  font-weight: 600;
+}
+
+.ud-status-ok {
+  color: #16a34a;
+  font-weight: 600;
+}
+
+.ud-footer {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.ud-team-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 42px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ws-primary);
+  background: rgba(47, 109, 246, 0.08);
+  border: 1px solid rgba(47, 109, 246, 0.2);
+  transition: background 180ms ease;
+}
+
+.ud-team-btn:hover {
+  background: rgba(47, 109, 246, 0.12);
+}
+
+.ud-logout-btn {
+  width: 100%;
+  height: 40px;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #647184;
+  background: transparent;
+  transition: color 180ms ease, background 180ms ease;
+}
+
+.ud-logout-btn:hover {
+  color: #dc2626;
+  background: #fef2f2;
 }
 
 .drawer-close {
@@ -1139,132 +1549,8 @@ provide('workspace', {
 }
 
 .drawer-close:hover {
-  color: #ee4d7a;
-  background: #fff1f5;
-  transform: rotate(90deg);
-}
-
-.drawer-hero {
-  padding: 18px;
-  border-radius: 18px;
-  background:
-    linear-gradient(135deg, rgba(238, 77, 122, 0.12), rgba(139, 123, 247, 0.12) 52%, rgba(91, 141, 239, 0.12)),
-    #fff;
-  box-shadow: 0 18px 34px rgba(21, 32, 51, 0.06);
-}
-
-.drawer-head {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-
-.drawer-avatar {
-  flex: 0 0 auto;
-  box-shadow: 0 14px 28px rgba(139, 123, 247, 0.18);
-}
-
-.drawer-head-copy {
-  min-width: 0;
-}
-
-.drawer-eyebrow {
-  display: inline-flex;
-  margin-bottom: 6px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(139, 123, 247, 0.12);
-  color: #8b7bf7;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.drawer-head h2 {
-  font-size: 28px;
-  line-height: 1.1;
-}
-
-.drawer-head p {
-  margin-top: 4px;
-  color: #647184;
-  word-break: break-all;
-}
-
-.drawer-badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 16px;
-}
-
-.drawer-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 6px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 800;
-  letter-spacing: 0.2px;
-}
-
-.drawer-badge.admin,
-.drawer-badge.agent,
-.drawer-badge.user {
-  color: #fff;
-}
-
-.drawer-badge.admin {
-  background: linear-gradient(135deg, #ee4d7a, #ff7eb3);
-}
-
-.drawer-badge.agent {
-  background: linear-gradient(135deg, #8b7bf7, #5b8def);
-}
-
-.drawer-badge.user {
-  background: linear-gradient(135deg, #42c978, #2fb86e);
-}
-
-.drawer-badge.muted {
-  background: #f4f7fb;
-  color: #647184;
-}
-
-.drawer-section {
-  padding: 14px;
-  border-radius: 16px;
-  background: #fff;
-  box-shadow: 0 10px 26px rgba(21, 32, 51, 0.05);
-  border: 1px solid #edf1f6;
-}
-
-.user-detail {
-  display: grid;
-  gap: 12px;
-}
-
-.user-detail div {
-  display: flex;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 14px 16px;
-  border-radius: 14px;
-  background: linear-gradient(180deg, #f8faff, #f5f7fc);
-  transition: transform var(--motion-base) var(--motion-soft), background var(--motion-base) ease;
-}
-
-.user-detail div:hover {
-  transform: translateX(4px);
-  background: linear-gradient(180deg, #f3f6ff, #eef3ff);
-}
-
-.user-detail dt {
-  color: #647184;
-}
-
-.user-detail dd {
   color: #152033;
-  font-weight: 800;
+  background: #e8edf4;
 }
 
 .section-title {
@@ -1290,50 +1576,6 @@ provide('workspace', {
 
 .section-title p {
   margin: 0;
-}
-
-.drawer-actions {
-  display: grid;
-  gap: 10px;
-  padding-top: 2px;
-}
-
-.drawer-action {
-  width: 100%;
-  height: 44px;
-  margin-top: 0;
-  border-radius: 14px;
-  color: #fff;
-  font-weight: 800;
-  background: linear-gradient(135deg, #ee4d7a, #8b7bf7 54%, #5b8def);
-  transition: transform var(--motion-base) var(--motion-soft), box-shadow var(--motion-base) ease, filter var(--motion-base) ease;
-}
-
-.drawer-action.primary {
-  box-shadow: 0 14px 28px rgba(139, 123, 247, 0.22);
-}
-
-.drawer-action:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 14px 28px rgba(139, 123, 247, 0.24);
-  filter: saturate(1.05);
-}
-
-.drawer-action:active {
-  transform: scale(0.98);
-}
-
-.drawer-action.secondary {
-  background: #f4f7fb;
-  color: #425066;
-  box-shadow: none;
-  border: 1px solid #e6ebf2;
-}
-
-.drawer-action.secondary:hover {
-  background: #eef3ff;
-  color: #8b7bf7;
-  box-shadow: 0 8px 18px rgba(139, 123, 247, 0.12);
 }
 
 .drawer-fade-enter-active,
@@ -1940,24 +2182,26 @@ provide('workspace', {
   flex-direction: column;
   justify-content: center;
   gap: 4px;
-  width: 36px;
-  height: 36px;
+  width: 38px;
+  height: 38px;
   padding: 8px;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.18);
+  border: 1px solid var(--ws-border);
+  border-radius: 11px;
+  background: #f6f8fc;
   cursor: pointer;
-  transition: background 0.2s ease;
+  transition: background 0.2s ease, border-color 0.2s ease;
 }
 
 .mobile-menu-btn:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: #eef3ff;
+  border-color: #c4d4ff;
 }
 
 .mobile-menu-btn span {
   display: block;
   width: 18px;
   height: 2px;
-  background: #fff;
+  background: var(--ws-text-2);
   border-radius: 2px;
   transition: transform 0.25s ease, opacity 0.2s ease;
 }
@@ -1986,197 +2230,267 @@ provide('workspace', {
   }
 }
 
+@media (max-width: 1280px) and (min-width: 761px) {
+  .workspace-layout:not(.has-mobile-user-tabbar) .mobile-menu-btn {
+    display: none !important;
+  }
+
+  .ws-toolbar .topbar-btn {
+    display: none;
+  }
+}
+
 @media (max-width: 1180px) {
   .ws-topbar {
-    grid-template-columns: auto 1fr;
-    padding: 16px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 0 14px;
+    gap: 10px;
+  }
+
+  .ws-topbar-start {
+    gap: 12px;
   }
 
   .ws-actions {
-    grid-column: 1 / -1;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
   }
 }
 
 @media (max-width: 760px) {
+  .workspace-layout {
+    --ws-topbar-h: 100px;
+  }
+
+  .workspace-layout:not(.has-mobile-user-tabbar) {
+    --ws-sitebar-h: calc(32px + env(safe-area-inset-top, 0px));
+    --ws-topbar-h: 124px;
+  }
+
   .site-bar {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 7px 14px;
-    background: #111827;
-    color: rgba(255, 255, 255, 0.88);
-    font-size: 13px;
+    height: var(--ws-sitebar-h);
+    min-height: var(--ws-sitebar-h);
+    max-height: var(--ws-sitebar-h);
+    padding: env(safe-area-inset-top, 0px) 12px 0;
+    box-sizing: border-box;
+    background: #0f172a;
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 12px;
     font-weight: 600;
-    letter-spacing: 0.3px;
+    line-height: 1;
   }
 
   .site-bar svg {
-    opacity: 0.7;
+    opacity: 0.75;
+    flex-shrink: 0;
+  }
+
+  .workspace-layout:not(.has-mobile-user-tabbar) .ws-topbar {
+    top: var(--ws-sitebar-h);
+    margin-top: 0;
+    border-top: none;
   }
 
   .ws-topbar {
-    margin: 0;
-    border-radius: 0;
-    grid-template-columns: auto 1fr auto;
-    padding: 0 14px;
-    min-height: 52px;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    padding: 0;
+    min-height: var(--ws-topbar-h);
+    gap: 0;
+    box-shadow: 0 1px 0 var(--ws-border), 0 4px 16px rgba(21, 32, 51, 0.05);
+  }
+
+  .ws-topbar-start {
+    flex: none;
+    width: 100%;
+    flex-wrap: nowrap;
+    padding: 10px 12px 8px;
     gap: 10px;
-    background: #fff;
-    color: #152033;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    justify-content: space-between;
+    box-sizing: border-box;
   }
 
-  .mobile-menu-btn {
-    display: flex !important;
-    background: rgba(0, 0, 0, 0.04);
+  .workspace-layout:not(.has-mobile-user-tabbar) .ws-topbar-start {
+    flex-wrap: nowrap;
+    padding-top: 10px;
+    padding-bottom: 8px;
   }
 
-  .mobile-menu-btn span {
-    background: #425066;
-  }
-
-  .mobile-menu-btn:hover {
-    background: rgba(0, 0, 0, 0.08);
-  }
-
-  .ws-nav {
+  .workspace-layout:not(.has-mobile-user-tabbar) .ws-nav-scroll {
     display: none !important;
+    flex: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+    order: unset !important;
   }
 
   .ws-brand {
+    flex: 1;
     min-width: 0;
-    white-space: nowrap;
+  }
+
+  .ws-brand-mark {
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+    background: #f8fafc;
+    border-color: var(--ws-border);
   }
 
   .ws-brand img {
-    width: 26px;
-    height: 26px;
+    width: 20px;
+    height: 20px;
   }
 
   .ws-brand strong {
     font-size: 16px;
-    letter-spacing: 0.5px;
-    color: #152033;
+    font-weight: 700;
+    letter-spacing: 0;
+    color: var(--ws-text);
+  }
+
+  .ws-nav-scroll {
+    display: none !important;
+  }
+
+  .mobile-menu-btn {
+    display: flex !important;
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: #fff;
+  }
+
+  .ws-actions {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px 10px;
+    border-top: 1px solid var(--ws-border);
+    background: #f8fafc;
+    box-sizing: border-box;
   }
 
   .ws-actions .topbar-btn {
     display: none !important;
   }
 
-  .ws-actions {
-    grid-column: auto;
+  .ws-actions .balance-pill {
+    flex: 1;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: 8px;
-    flex-wrap: nowrap;
-  }
-
-  .ws-actions .balance-pill {
-    font-size: 12px;
-    padding: 4px 4px 4px 10px;
-    gap: 6px;
-    background: transparent;
-    border-color: transparent;
-  }
-
-  .ws-actions .balance-pill:hover {
-    background: rgba(0, 0, 0, 0.03);
+    padding: 8px 10px 8px 12px;
+    border-radius: 10px;
+    background: #fff;
+    border: 1px solid var(--ws-border);
   }
 
   .ws-actions .balance-pill .balance-label {
-    color: #9aa5b5;
-    font-size: 9px;
-    letter-spacing: 0.5px;
+    font-size: 11px;
+    color: var(--ws-text-3);
   }
 
   .ws-actions .balance-value {
-    color: #152033;
-    font-size: 14px;
-  }
-
-  .ws-actions .recharge-btn {
-    padding: 3px 10px;
-    font-size: 11px;
-    background: #2563eb;
-    color: #fff;
-  }
-
-  .ws-actions .avatar-button {
-    display: grid;
-    width: 32px;
-    height: 32px;
-    font-size: 13px;
-    border-color: rgba(0, 0, 0, 0.1);
-  }
-
-  .workspace-layout.has-mobile-user-tabbar .ws-topbar {
-    grid-template-columns: minmax(0, 1fr) auto;
-    justify-content: space-between;
-  }
-
-  .workspace-layout.has-mobile-user-tabbar .ws-brand {
-    justify-self: start;
-    overflow: hidden;
-  }
-
-  .workspace-layout.has-mobile-user-tabbar .ws-brand strong {
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .workspace-layout.has-mobile-user-tabbar .ws-actions {
-    justify-self: end;
-    gap: 6px;
+    flex: 1;
     min-width: 0;
-  }
-
-  .workspace-layout.has-mobile-user-tabbar .ws-actions .balance-pill {
-    min-width: 0;
-    max-width: min(170px, calc(100vw - 188px));
-    padding: 5px 5px 5px 8px;
-    gap: 5px;
-    border-radius: 999px;
-    background: #f7f9ff;
-    border: 1px solid #e8eefc;
-  }
-
-  .workspace-layout.has-mobile-user-tabbar .ws-actions .balance-label {
-    flex: 0 0 auto;
-    color: #7a879b;
-    font-size: 10px;
-    letter-spacing: 0;
-  }
-
-  .workspace-layout.has-mobile-user-tabbar .ws-actions .balance-value {
-    min-width: 0;
-    color: #111827;
-    font-size: 13px;
+    font-size: 15px;
+    font-weight: 800;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .workspace-layout.has-mobile-user-tabbar .ws-actions .recharge-btn {
+  .ws-actions .recharge-btn {
+    flex-shrink: 0;
+    padding: 7px 14px;
+    font-size: 12px;
+    font-weight: 700;
+    border-radius: 8px;
+  }
+
+  .ws-actions .avatar-button {
+    display: grid;
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    font-size: 14px;
+    border: 1px solid var(--ws-border);
+    background: #fff;
+  }
+
+  .workspace-layout.has-mobile-user-tabbar {
+    --ws-topbar-h: 52px;
+    --ws-sitebar-h: 0px;
+  }
+
+  .workspace-layout.has-mobile-user-tabbar .site-bar {
+    display: none;
+  }
+
+  .workspace-layout.has-mobile-user-tabbar .ws-topbar {
+    top: 0;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
+    padding: 0 12px;
+    min-height: var(--ws-topbar-h);
+  }
+
+  .workspace-layout.has-mobile-user-tabbar .ws-topbar-start {
+    flex: 1;
+    padding: 0;
+    width: auto;
+  }
+
+  .workspace-layout.has-mobile-user-tabbar .ws-actions {
     flex: 0 0 auto;
-    padding: 3px 8px;
+    width: auto;
+    padding: 0;
+    border-top: none;
+    background: transparent;
+    gap: 8px;
+  }
+
+  .workspace-layout.has-mobile-user-tabbar .ws-actions .balance-pill {
+    flex: 0 1 auto;
+    max-width: min(200px, calc(100vw - 120px));
+    padding: 6px 8px 6px 10px;
+  }
+
+  .workspace-layout.has-mobile-user-tabbar .ws-actions .balance-value {
+    font-size: 14px;
+  }
+
+  .workspace-layout.has-mobile-user-tabbar .ws-actions .recharge-btn {
+    padding: 6px 12px;
   }
 
   .workspace-layout.has-mobile-user-tabbar .ws-actions .avatar-button {
-    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
   }
 
   @media (max-width: 380px) {
     .workspace-layout.has-mobile-user-tabbar .ws-brand strong {
-      max-width: 68px;
+      max-width: 72px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .workspace-layout.has-mobile-user-tabbar .ws-actions .balance-label {
       display: none;
-    }
-
-    .workspace-layout.has-mobile-user-tabbar .ws-actions .balance-pill {
-      max-width: calc(100vw - 174px);
     }
   }
 
@@ -2454,27 +2768,8 @@ provide('workspace', {
     border-bottom-right-radius: 22px;
   }
 
-  .drawer-hero {
-    padding: 14px;
-    border-radius: 16px;
-  }
-
-  .drawer-head h2 {
-    font-size: 24px;
-  }
-
-  .drawer-badges {
-    gap: 6px;
-    margin-top: 12px;
-  }
-
-  .drawer-badge {
-    padding: 5px 9px;
-  }
-
-  .drawer-section {
-    padding: 12px;
-    border-radius: 14px;
+  .ud-balance-value {
+    font-size: 22px;
   }
 
   .user-detail div {
@@ -2488,11 +2783,6 @@ provide('workspace', {
 
   .section-title small {
     text-align: left;
-  }
-
-  .drawer-actions {
-    grid-template-columns: 1fr;
-    gap: 8px;
   }
 
   /* 手机端：底部上滑/下滑动画 */

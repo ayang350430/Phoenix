@@ -1,7 +1,7 @@
 <script setup>
-import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessageBox, ElMessage, ElPagination } from 'element-plus'
+import { ElMessageBox, ElMessage, ElPagination, ElDatePicker } from 'element-plus'
 import { getUserOrderStatusDisplay } from '../utils/orderStatusDisplay.js'
 
 // v-click-outside 指令
@@ -21,6 +21,12 @@ const route = useRoute()
 const ws = inject('workspace')
 const { getToken, refreshKey, isAdmin, isAgent, fetchBalance, currentUser } = ws
 const isMyOrdersPage = computed(() => route.path === '/my-orders')
+const pageHeroTitle = computed(() => (isMyOrdersPage.value ? '我的订单' : '下单记录'))
+const pageHeroDesc = computed(() =>
+  isMyOrdersPage.value
+    ? '查看您提交的批次进度、订单明细与退款状态'
+    : '批次汇总、订单状态追踪，管理员可审核补单与导出问题订单'
+)
 const canExportProblemOrders = computed(() => (isAdmin.value || isAgent.value) && !isMyOrdersPage.value)
 const canViewOrderStatus = computed(() => (isAdmin.value || isAgent.value) && !isMyOrdersPage.value)
 
@@ -58,6 +64,21 @@ function closeModuleDropdown() { showModuleDropdown.value = false }
 // ========== 搜索 ==========
 const searchBatchNo = ref('')
 const searchOrderNo = ref('')
+const searchAgentId = ref('')
+const searchStartDate = ref('')
+const searchEndDate = ref('')
+const agentList = ref([])
+
+async function fetchAgentList() {
+  if (!isAdmin.value) return
+  try {
+    const res = await fetch('/api/users/agents', {
+      headers: { Authorization: `Bearer ${getToken()}` }
+    })
+    const data = await res.json()
+    if (data.code === 0) agentList.value = data.data || []
+  } catch { /* ignore */ }
+}
 
 // ========== 批次列表 ==========
 const batches = ref([])
@@ -69,7 +90,7 @@ const loading = ref(false)
 // ========== 状态 & 类型 ==========
 const statusConf = {
   pending:            { label: '待处理',   color: '#9aa5b5', bg: '#f6f8fc', border: '#d0d7e2' },
-  processing:         { label: '处理中',   color: '#5b8def', bg: '#eef3ff', border: '#5b8def' },
+  processing:         { label: '处理中',   color: '#2f6df6', bg: 'rgba(47, 109, 246, 0.1)', border: '#2f6df6' },
   completed:          { label: '已完成',   color: '#42c978', bg: '#f0fff4', border: '#42c978' },
   partial_completed:  { label: '部分完成', color: '#f5a623', bg: '#fff7e6', border: '#f5a623' },
   refunded:           { label: '已退款',   color: '#e8a735', bg: '#fffbf0', border: '#e8a735' },
@@ -96,7 +117,7 @@ function batchProgressTone(batch) {
 }
 
 function batchBorderTone(batch) {
-  return canViewOrderStatus.value ? sc(batch?.status).border : '#5b8def'
+  return canViewOrderStatus.value ? sc(batch?.status).border : '#2f6df6'
 }
 
 function batchProgress(batch) {
@@ -125,9 +146,18 @@ function fmtMoney(v) {
 }
 
 // ========== API ==========
+function buildAdminFilterParams(q) {
+  if (!isAdmin.value) return
+  if (searchAgentId.value) q.set('agent_id', searchAgentId.value)
+  if (searchStartDate.value) q.set('start_date', searchStartDate.value)
+  if (searchEndDate.value) q.set('end_date', searchEndDate.value)
+}
+
 async function fetchStats() {
   try {
-    const res = await fetch('/api/tasks/stats', {
+    const q = new URLSearchParams()
+    buildAdminFilterParams(q)
+    const res = await fetch(`/api/tasks/stats?${q}`, {
       headers: { Authorization: `Bearer ${getToken()}` }
     })
     const data = await res.json()
@@ -148,6 +178,7 @@ async function fetchBatches() {
   try {
     const q = new URLSearchParams({ page: page.value, pageSize })
     if (searchBatchNo.value.trim()) q.set('batch_no', searchBatchNo.value.trim())
+    buildAdminFilterParams(q)
     const res = await fetch(`/api/tasks/batches?${q}`, {
       headers: { Authorization: `Bearer ${getToken()}` }
     })
@@ -160,12 +191,16 @@ async function fetchBatches() {
   finally { loading.value = false }
 }
 
-function doSearch() { page.value = 1; fetchBatches() }
+function doSearch() { page.value = 1; fetchStats(); fetchBatches() }
 
 function resetSearch() {
   searchBatchNo.value = ''
   searchOrderNo.value = ''
+  searchAgentId.value = ''
+  searchStartDate.value = ''
+  searchEndDate.value = ''
   page.value = 1
+  fetchStats()
   fetchBatches()
 }
 
@@ -175,32 +210,41 @@ const drawerBatch = ref(null)
 const drawerOrders = ref([])
 const drawerLoading = ref(false)
 const isAnyDrawerOpen = computed(() => showDrawer.value || supDrawerShow.value)
-let scrollLockState = null
+const drawerBodyRef = ref(null)
+let scrollLockDepth = 0
+let scrollLockSnapshot = null
 
+/** 仅用 overflow 锁定背景滚动，避免 position:fixed 导致关闭时页面先闪到顶部 */
 function lockPageScroll() {
-  if (scrollLockState) return
-  scrollLockState = {
-    top: window.scrollY,
-    overflow: document.body.style.overflow,
-    position: document.body.style.position,
-    width: document.body.style.width,
-    topStyle: document.body.style.top
+  scrollLockDepth += 1
+  if (scrollLockDepth > 1) return
+  scrollLockSnapshot = {
+    htmlOverflow: document.documentElement.style.overflow,
+    bodyOverflow: document.body.style.overflow
   }
+  document.documentElement.style.overflow = 'hidden'
   document.body.style.overflow = 'hidden'
-  document.body.style.position = 'fixed'
-  document.body.style.width = '100%'
-  document.body.style.top = `-${scrollLockState.top}px`
 }
 
 function unlockPageScroll() {
-  if (!scrollLockState) return
-  const { top, overflow, position, width, topStyle } = scrollLockState
-  document.body.style.overflow = overflow
-  document.body.style.position = position
-  document.body.style.width = width
-  document.body.style.top = topStyle
-  scrollLockState = null
-  window.scrollTo(0, top)
+  if (scrollLockDepth <= 0) return
+  scrollLockDepth -= 1
+  if (scrollLockDepth > 0 || !scrollLockSnapshot) return
+  const { htmlOverflow, bodyOverflow } = scrollLockSnapshot
+  document.documentElement.style.overflow = htmlOverflow
+  document.body.style.overflow = bodyOverflow
+  scrollLockSnapshot = null
+}
+
+function scrollToOrderInDrawer(orderNo) {
+  const root = drawerBodyRef.value
+  if (!root || !orderNo) return
+  const el = root.querySelector(`[data-order-no="${CSS.escape(String(orderNo))}"]`)
+  if (!el) return
+  const targetTop = el.offsetTop - (root.clientHeight - el.offsetHeight) / 2
+  root.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' })
+  el.classList.add('highlight-pulse')
+  setTimeout(() => el.classList.remove('highlight-pulse'), 2000)
 }
 
 async function openBatchDrawer(batch) {
@@ -223,6 +267,45 @@ async function openBatchDrawer(batch) {
 }
 
 function closeDrawer() { showDrawer.value = false }
+
+const copiedNoteUrlId = ref(null)
+let copiedNoteUrlTimer = null
+
+function fallbackCopyText(text) {
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.position = 'fixed'
+  ta.style.left = '-9999px'
+  document.body.appendChild(ta)
+  ta.select()
+  try {
+    return document.execCommand('copy')
+  } catch {
+    return false
+  } finally {
+    document.body.removeChild(ta)
+  }
+}
+
+async function copyNoteUrl(url, orderId) {
+  if (!url) return
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(url)
+    } else if (!fallbackCopyText(url)) {
+      ElMessage.error('复制失败')
+      return
+    }
+  } catch {
+    if (!fallbackCopyText(url)) {
+      ElMessage.error('复制失败')
+      return
+    }
+  }
+  copiedNoteUrlId.value = orderId
+  if (copiedNoteUrlTimer) clearTimeout(copiedNoteUrlTimer)
+  copiedNoteUrlTimer = setTimeout(() => { copiedNoteUrlId.value = null }, 2000)
+}
 
 const orderStatusConf = {
   pending:           { label: '待处理', color: '#9aa5b5' },
@@ -248,6 +331,51 @@ function orderProgressTone(order) {
 
 function orderProgressTextColor(order) {
   return canViewOrderStatus.value ? osc(order?.order_status).color : '#5b8def'
+}
+
+function orderAvatarUrl(order) {
+  return order?.avatar_url || order?.avatar || ''
+}
+
+function orderAvatarInitial(order) {
+  const name = (order?.author_name || order?.title || '笔记').trim()
+  return (name[0] || '笔').toUpperCase()
+}
+
+function orderAuthorName(order) {
+  return order?.author_name || ''
+}
+
+function orderNoteTitle(order) {
+  return order?.title || ''
+}
+
+const avatarLoadFailed = ref({})
+
+function showOrderAvatarFallback(order) {
+  if (!order?.id) return true
+  return !orderAvatarUrl(order) || !!avatarLoadFailed.value[order.id]
+}
+
+function onOrderAvatarError(orderId) {
+  if (!orderId) return
+  avatarLoadFailed.value = { ...avatarLoadFailed.value, [orderId]: true }
+}
+
+/** 补单明细行 → 与订单卡片共用的笔记/头像字段 */
+function supAsOrder(r) {
+  if (!r) return {}
+  return {
+    id: r.order_id || r.id,
+    title: r.order_title || r.title || '',
+    author_name: r.author_name || '',
+    avatar_url: r.avatar_url || '',
+    note_url: r.order_note_url || r.note_url || ''
+  }
+}
+
+function supRejectReason(r) {
+  return (r?.review_remark || r?.reason_message || '').trim()
 }
 
 // ========== 退款 ==========
@@ -624,6 +752,29 @@ function supBatchHint(sb) {
   return null
 }
 
+function supBatchStatusView(sb) {
+  const hint = supBatchHint(sb)
+  if (!hint) return { label: '补单', color: '#2f6df6', bg: 'rgba(47, 109, 246, 0.1)' }
+  const tone = {
+    'hint-warn': { color: '#f5a623', bg: '#fff7e6' },
+    'hint-purple': { color: '#8b7bf7', bg: '#f4f0ff' },
+    'hint-blue': { color: '#2f6df6', bg: 'rgba(47, 109, 246, 0.1)' },
+    'hint-red': { color: '#ff4d4f', bg: '#fff1f0' }
+  }
+  return { label: hint.text, ...(tone[hint.cls] || { color: '#647184', bg: '#f6f8fc' }) }
+}
+
+function supBatchProgress(sb) {
+  const total = sb.total_count || 0
+  if (!total) return 0
+  const open = (sb.pending_count || 0) + (sb.agent_approved_count || 0)
+  return Math.min(100, Math.round(((total - open) / total) * 100))
+}
+
+function supBatchProgressTone() {
+  return 'linear-gradient(90deg, #ec4f8b 0%, #2f6df6 100%)'
+}
+
 async function fetchSupplements() {
   supLoading.value = true
   try {
@@ -687,12 +838,10 @@ async function goToOrder(batchId, orderNo) {
   activeModule.value = 'orders'
   await fetchBatches()
   const b = batches.value.find(x => x.id === batchId)
-  if (b) {
-    await openBatchDrawer(b)
-    await new Promise(r => setTimeout(r, 200))
-    const el = document.querySelector(`[data-order-no="${orderNo}"]`)
-    if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); el.classList.add('highlight-pulse'); setTimeout(() => el.classList.remove('highlight-pulse'), 2000) }
-  }
+  if (!b) return
+  await openBatchDrawer(b)
+  await nextTick()
+  scrollToOrderInDrawer(orderNo)
 }
 
 // 审批
@@ -802,15 +951,27 @@ watch(isAnyDrawerOpen, (open) => {
 onMounted(() => {
   fetchStats()
   fetchBatches()
+  fetchAgentList()
 })
 
 onUnmounted(() => {
+  scrollLockDepth = 0
   unlockPageScroll()
+  if (copiedNoteUrlTimer) clearTimeout(copiedNoteUrlTimer)
 })
 </script>
 
 <template>
   <div class="records-page">
+    <header class="page-hero">
+      <div class="hero-bg" aria-hidden="true"></div>
+      <div class="hero-content">
+        <span class="hero-badge">{{ isMyOrdersPage ? '订单中心' : '记录中心' }}</span>
+        <h1 class="hero-title">{{ pageHeroTitle }}</h1>
+        <p class="hero-desc">{{ pageHeroDesc }}</p>
+      </div>
+    </header>
+
     <!-- 顶部统计 -->
     <div class="stats-row">
       <div class="stat-card card-batch">
@@ -866,11 +1027,11 @@ onUnmounted(() => {
         <h3 class="export-dialog-title">导出问题订单</h3>
         <div class="export-field">
           <label>开始日期</label>
-          <input type="date" v-model="exportStartDate" class="export-input" />
+          <el-date-picker v-model="exportStartDate" type="date" placeholder="选择开始日期" value-format="YYYY-MM-DD" size="default" style="width:100%" />
         </div>
         <div class="export-field">
           <label>结束日期</label>
-          <input type="date" v-model="exportEndDate" class="export-input" />
+          <el-date-picker v-model="exportEndDate" type="date" placeholder="选择结束日期" value-format="YYYY-MM-DD" size="default" style="width:100%" />
         </div>
         <div class="export-field">
           <label>订单类型</label>
@@ -904,7 +1065,8 @@ onUnmounted(() => {
 
       <!-- 筛选栏 -->
       <div class="filter-bar">
-        <div class="filter-left">
+        <div class="filter-toolbar" :class="{ 'filter-toolbar--sup': activeModule === 'supplements' }">
+          
           <!-- 模块下拉选择 -->
           <div class="module-select" v-click-outside="closeModuleDropdown">
             <button type="button" class="module-trigger" @click="toggleModuleDropdown">
@@ -930,37 +1092,77 @@ onUnmounted(() => {
               </div>
             </Transition>
           </div>
-
           <!-- 下单记录筛选 -->
-          <div v-if="activeModule === 'orders'" class="filter-inputs">
-            <input v-model="searchBatchNo" placeholder="批次号" @keyup.enter="doSearch" />
-            <input v-model="searchOrderNo" placeholder="订单号" @keyup.enter="doSearch" />
-            <button type="button" class="btn-search" @click="doSearch">搜索</button>
-            <button type="button" class="btn-reset" @click="resetSearch">重置</button>
+          <div v-if="activeModule === 'orders'" class="filter-form">
+            <div class="filter-fields">
+              <input v-model="searchOrderNo" class="filter-input" placeholder="订单号" @keyup.enter="doSearch" />
+              <template v-if="isAdmin">
+                <select v-model="searchAgentId" class="filter-select filter-field-agent" @change="doSearch">
+                  <option value="">全部代理</option>
+                  <option v-for="a in agentList" :key="a.id" :value="a.id">{{ a.nickname || a.username }} ({{ a.sub_count }}人)</option>
+                </select>
+                <el-date-picker v-model="searchStartDate" class="filter-date" type="date" placeholder="开始日期" value-format="YYYY-MM-DD" size="small" @change="doSearch" />
+                <el-date-picker v-model="searchEndDate" class="filter-date" type="date" placeholder="结束日期" value-format="YYYY-MM-DD" size="small" @change="doSearch" />
+              </template>
+            </div>
+            <div class="filter-actions">
+              <span class="filter-total">
+                <span class="filter-total-num">{{ total }}</span>
+                条记录
+              </span>
+              <div class="filter-btns">
+                <button type="button" class="btn-search" @click="doSearch">搜索</button>
+                <button type="button" class="btn-reset" @click="resetSearch">重置</button>
+              </div>
+            </div>
           </div>
 
           <!-- 补单记录筛选 -->
-          <div v-else class="filter-inputs">
-            <select v-model="supSearchStatus" class="filter-select" @change="supDoSearch">
-              <option value="">全部状态</option>
-              <option value="pending">待审核</option>
-              <option value="agent_approved">代理已批准</option>
-              <option value="processing">处理中</option>
-              <option value="rejected">已驳回</option>
-              <option value="completed">已完成</option>
-            </select>
-            <button type="button" class="btn-search" @click="supDoSearch">搜索</button>
-            <button type="button" class="btn-reset" @click="supReset">重置</button>
+          <div v-else class="filter-form filter-form--sup">
+            <div class="filter-fields">
+              <select v-model="supSearchStatus" class="filter-select" @change="supDoSearch">
+                <option value="">全部状态</option>
+                <option value="pending">待审核</option>
+                <option value="agent_approved">代理已批准</option>
+                <option value="processing">处理中</option>
+                <option value="rejected">已驳回</option>
+                <option value="completed">已完成</option>
+              </select>
+            </div>
+            <div class="filter-actions filter-actions--btns-only">
+              <span class="filter-total filter-sup-mobile-total">
+                <span class="filter-total-num">{{ supTotal }}</span>
+                条记录
+              </span>
+              <div class="filter-btns">
+                <button type="button" class="btn-search" @click="supDoSearch">搜索</button>
+                <button type="button" class="btn-reset" @click="supReset">重置</button>
+              </div>
+            </div>
           </div>
         </div>
-        <span class="filter-total">{{ activeModule === 'orders' ? `共 ${total} 条记录` : `共 ${supTotal} 条记录` }}</span>
       </div>
 
       <!-- ===== 下单记录模块 ===== -->
       <template v-if="activeModule === 'orders'">
         <div class="batch-list">
-          <div v-if="loading" class="empty-state">加载中...</div>
+          <div v-if="loading" class="empty-state">
+            <div class="empty-spinner"></div>
+            <span>加载中...</span>
+          </div>
           <template v-else-if="batches.length">
+            <div
+              class="batch-list-head"
+              :class="{ 'no-fail-col': !canViewOrderStatus }"
+              aria-hidden="true"
+            >
+              <span class="blh-info">批次信息</span>
+              <span class="blh-stat">总数</span>
+              <span class="blh-stat">成功</span>
+              <span v-if="canViewOrderStatus" class="blh-stat">失败</span>
+              <span class="blh-amount">实际付款</span>
+              <span class="blh-action">操作</span>
+            </div>
             <div
               v-for="batch in batches"
               :key="batch.id"
@@ -973,11 +1175,25 @@ onUnmounted(() => {
               <div class="batch-info">
                 <div class="batch-head">
                   <span class="batch-no">{{ batch.batch_no || batch.batch_id }}</span>
-                  <span class="tag type-tag">{{ pn(batch) }}</span>
-                  <span class="tag" :style="batch.data_source === 'pgy' ? 'color:#ee4d7a;background:#fff0f5;border-color:#f8d8e4' : 'color:#18a058;background:#eafaf1;border-color:#b7ebc9'">{{ batch.data_source === 'pgy' ? '蒲公英' : '实时' }}</span>
-                  <span class="tag method-tag">确认提交</span>
-                  <span v-if="isMyOrdersPage && isAgent && batch.nickname" class="tag user-tag">{{ batch.nickname || batch.username }}</span>
-                  <span v-if="canViewOrderStatus && batch.has_upstream === false" class="tag no-upstream-tag">无上游</span>
+                  <span class="batch-chip batch-chip--type">{{ pn(batch) }}</span>
+                  <span
+                    class="batch-chip"
+                    :class="batch.data_source === 'pgy' ? 'batch-chip--pgy' : 'batch-chip--live'"
+                  >{{ batch.data_source === 'pgy' ? '蒲公英' : '实时' }}</span>
+                </div>
+                <div class="batch-meta-row">
+                  <span
+                    class="batch-chip batch-chip--status"
+                    :style="{
+                      color: batchStatusView(batch).color,
+                      background: batchStatusView(batch).bg
+                    }"
+                  >{{ batchStatusView(batch).label }}</span>
+                  <span v-if="isAdmin && batch.nickname" class="batch-chip batch-chip--user">{{ batch.nickname || batch.username }}</span>
+                  <span v-if="isAdmin && batch.agent_name" class="batch-chip batch-chip--agent">代理 {{ batch.agent_name }}</span>
+                  <span v-else-if="isAdmin && !batch.agent_id" class="batch-chip batch-chip--direct">直属</span>
+                  <span v-if="isMyOrdersPage && isAgent && batch.nickname" class="batch-chip batch-chip--user">{{ batch.nickname || batch.username }}</span>
+                  <span v-if="canViewOrderStatus && batch.has_upstream === false" class="batch-chip batch-chip--warn">无上游</span>
                 </div>
                 <div class="batch-time">
                   提交时间: {{ fmtTime(batch.created_at) }}
@@ -1003,21 +1219,17 @@ onUnmounted(() => {
                   </div>
                 </div>
               </div>
-              <div class="batch-stat">
-                <span class="stat-lbl">总数</span>
+              <div class="batch-stat batch-stat--total">
                 <strong>{{ batch.total_count || 0 }}</strong>
               </div>
-              <div class="batch-stat">
-                <span class="stat-lbl">成功</span>
+              <div class="batch-stat batch-stat--ok">
                 <strong>{{ batch.succeeded_count || 0 }}</strong>
               </div>
-              <div v-if="canViewOrderStatus" class="batch-stat">
-                <span class="stat-lbl">失败</span>
-                <strong>{{ batch.failed_count || 0 }}</strong>
+              <div v-if="canViewOrderStatus" class="batch-stat batch-stat--fail">
+                <strong :class="{ 'is-hot': (batch.failed_count || 0) > 0 }">{{ batch.failed_count || 0 }}</strong>
               </div>
               <div class="batch-amount">
-                <span class="stat-lbl">实际付款金额</span>
-                <strong>¥ {{ fmtMoney(batch.estimated_amount) }}</strong>
+                <strong>¥{{ fmtMoney(batch.estimated_amount) }}</strong>
               </div>
               <div class="batch-action">
                 <div class="flex_tab">
@@ -1031,15 +1243,6 @@ onUnmounted(() => {
                     <svg v-if="!exporting[batch.id]" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                     <svg v-else class="spin-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 2a10 10 0 0 1 10 10"/></svg>
                   </button>
-                  <span
-                    class="status-pill"
-                    :style="{
-                      color: batchStatusView(batch).color,
-                      background: batchStatusView(batch).bg,
-                      borderColor: batchStatusView(batch).border || batchStatusView(batch).color
-                    }"
-                    style="margin-left: 6px;"
-                  >{{ batchStatusView(batch).label }}</span>
                 </div>
                 <svg class="arrow-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
                 <div class="action-amount">
@@ -1071,22 +1274,44 @@ onUnmounted(() => {
           <div v-if="supLoading" class="empty-state">加载中...</div>
           <template v-else-if="supBatches.length">
             <div
+              class="batch-list-head sup-batch-list-head"
+              :class="{ 'sup-batch-list-head--no-agent': !isAdmin }"
+              aria-hidden="true"
+            >
+              <span class="blh-info">批次信息</span>
+              <span class="blh-stat">补单数</span>
+              <span class="blh-stat">待审核</span>
+              <span v-if="isAdmin" class="blh-stat">代理已批</span>
+              <span class="blh-amount">差额总量</span>
+              <span class="blh-action">操作</span>
+            </div>
+            <div
               v-for="sb in supBatches"
               :key="sb.batch_id"
               class="batch-row sup-batch-row"
+              :class="{ 'sup-batch-row--no-agent': !isAdmin }"
+              :style="{ '--prog': supBatchProgress(sb) + '%', '--prog-color': supBatchProgressTone() }"
               @click="openSupDrawer(sb)"
             >
+              <div class="batch-progress-bar"></div>
               <div class="batch-info">
                 <div class="batch-head">
                   <a class="batch-no sup-link" @click.stop="goToBatch(sb.batch_id)" title="查看批次订单">{{ sb.batch_no }}</a>
-                  <span class="tag type-tag">{{ sb.source_type || '补单' }}</span>
-                  <span v-if="(isAdmin || isAgent) && sb.username" class="tag user-tag">{{ sb.nickname || sb.username }}</span>
+                  <span class="batch-chip batch-chip--type">{{ sb.source_type || '补单' }}</span>
+                </div>
+                <div class="batch-meta-row">
+                  <span
+                    class="batch-chip batch-chip--status"
+                    :style="{
+                      color: supBatchStatusView(sb).color,
+                      background: supBatchStatusView(sb).bg
+                    }"
+                  >{{ supBatchStatusView(sb).label }}</span>
+                  <span v-if="(isAdmin || isAgent) && sb.username" class="batch-chip batch-chip--user">{{ sb.nickname || sb.username }}</span>
                 </div>
                 <div class="batch-time">
                   申请时间: {{ fmtTime(sb.earliest_at) }}
-                  <span v-if="supBatchHint(sb)" class="sup-hint" :class="supBatchHint(sb).cls">{{ supBatchHint(sb).text }}</span>
                 </div>
-                <!-- 移动端统计网格 -->
                 <div class="mobile-stat-grid sup-grid">
                   <div class="msg-cell">
                     <span class="msg-label">补单数</span>
@@ -1100,26 +1325,22 @@ onUnmounted(() => {
                     <span class="msg-label">代理已批</span>
                     <strong class="msg-val ok">{{ sb.agent_approved_count }}</strong>
                   </div>
-                  <!-- <div class="msg-cell">
+                  <div class="msg-cell amount">
                     <span class="msg-label">差额总量</span>
-                    <strong class="msg-val fail">{{ sb.total_shortage }}</strong>
-                  </div> -->
+                    <strong class="msg-val accent">{{ sb.total_shortage }}</strong>
+                  </div>
                 </div>
               </div>
-              <div class="batch-stat">
-                <span class="stat-lbl">补单数</span>
+              <div class="batch-stat batch-stat--total">
                 <strong>{{ sb.total_count }}</strong>
               </div>
-              <div class="batch-stat">
-                <span class="stat-lbl">待审核</span>
+              <div class="batch-stat batch-stat--pending">
                 <strong :class="{ 'fail-num': sb.pending_count > 0 }">{{ sb.pending_count }}</strong>
               </div>
-              <div class="batch-stat" v-if="isAdmin">
-                <span class="stat-lbl">代理已批</span>
+              <div v-if="isAdmin" class="batch-stat batch-stat--agent">
                 <strong :class="{ 'ok-num': sb.agent_approved_count > 0 }">{{ sb.agent_approved_count }}</strong>
               </div>
-              <div class="batch-stat">
-                <span class="stat-lbl">差额总量</span>
+              <div class="batch-amount batch-amount--shortage">
                 <strong class="fail-num">{{ sb.total_shortage }}</strong>
               </div>
               <div class="batch-action">
@@ -1155,6 +1376,7 @@ onUnmounted(() => {
       <div v-if="showDrawer" class="drawer-mask" @click.self="closeDrawer">
         <Transition name="drawer-slide">
           <div v-if="showDrawer" class="order-drawer">
+            <div class="drawer-drag-bar" aria-hidden="true"><span></span></div>
             <!-- 抽屉头部 -->
             <div class="drawer-header">
               <div class="drawer-title-row">
@@ -1166,63 +1388,66 @@ onUnmounted(() => {
                   >退款申请中</span>
                   <button
                     v-else-if="drawerBatch && canBatchRefund && !['refunded','cancelled'].includes(drawerBatch.status)"
+                    type="button"
                     class="refund-btn"
                     :disabled="refunding"
                     @click="requestBatchRefund"
                   >{{ refunding ? '处理中...' : '申请退款' }}</button>
-                  <button class="drawer-close" @click="closeDrawer">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
+                  <button type="button" class="drawer-close" aria-label="关闭" @click="closeDrawer">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
                 </div>
               </div>
-              <div v-if="drawerBatch" class="drawer-batch-info">
-                <div class="dbi-row">
-                  <span class="dbi-label">批次号</span>
-                  <span class="dbi-val mono">{{ drawerBatch.batch_no || drawerBatch.batch_id }}</span>
-                </div>
-                <div class="dbi-row">
-                  <span class="dbi-label">状态</span>
-                  <span
-                    class="status-pill small"
-                    :style="{
-                      color: batchStatusView(drawerBatch).color,
-                      background: batchStatusView(drawerBatch).bg,
-                      borderColor: batchStatusView(drawerBatch).border || batchStatusView(drawerBatch).color
-                    }"
-                  >{{ batchStatusView(drawerBatch).label }}</span>
-                </div>
-                <div class="dbi-row">
-                  <span class="dbi-label">提交时间</span>
-                  <span class="dbi-val">{{ fmtTime(drawerBatch.created_at) }}</span>
-                </div>
-                <div class="dbi-summary">
-                  <div class="dbi-chip">
-                    <span>总数</span>
-                    <strong>{{ drawerBatch.total_count || 0 }}</strong>
+              <div v-if="drawerBatch" class="drawer-summary">
+                <div class="drawer-stats">
+                  <div class="drawer-stat drawer-stat--wide">
+                    <span class="drawer-stat-label">批次号</span>
+                    <span class="drawer-stat-val mono">{{ drawerBatch.batch_no || drawerBatch.batch_id }}</span>
                   </div>
-                  <div class="dbi-chip ok">
-                    <span>成功</span>
-                    <strong>{{ drawerBatch.succeeded_count || 0 }}</strong>
+                  <div class="drawer-stat">
+                    <span class="drawer-stat-label">状态</span>
+                    <span
+                      class="status-pill drawer-stat-pill"
+                      :style="{
+                        color: batchStatusView(drawerBatch).color,
+                        background: batchStatusView(drawerBatch).bg,
+                        borderColor: batchStatusView(drawerBatch).border || batchStatusView(drawerBatch).color
+                      }"
+                    >{{ batchStatusView(drawerBatch).label }}</span>
                   </div>
-                  <div v-if="canViewOrderStatus" class="dbi-chip fail">
-                    <span>失败</span>
-                    <strong>{{ drawerBatch.failed_count || 0 }}</strong>
+                  <div class="drawer-stat drawer-stat--time">
+                    <span class="drawer-stat-label">提交时间</span>
+                    <span class="drawer-stat-val">{{ fmtTime(drawerBatch.created_at) }}</span>
                   </div>
-                  <div class="dbi-chip amount">
-                    <span>金额</span>
-                    <strong>¥{{ fmtMoney(drawerBatch.estimated_amount) }}</strong>
+                  <div class="drawer-stat">
+                    <span class="drawer-stat-label">总数</span>
+                    <span class="drawer-stat-val">{{ drawerBatch.total_count || 0 }}</span>
+                  </div>
+                  <div class="drawer-stat drawer-stat--ok">
+                    <span class="drawer-stat-label">成功</span>
+                    <span class="drawer-stat-val">{{ drawerBatch.succeeded_count || 0 }}</span>
+                  </div>
+                  <div v-if="canViewOrderStatus" class="drawer-stat drawer-stat--fail">
+                    <span class="drawer-stat-label">失败</span>
+                    <span class="drawer-stat-val">{{ drawerBatch.failed_count || 0 }}</span>
+                  </div>
+                  <div class="drawer-stat drawer-stat--accent">
+                    <span class="drawer-stat-label">金额</span>
+                    <span class="drawer-stat-val drawer-stat-amount">¥{{ fmtMoney(drawerBatch.estimated_amount) }}</span>
                   </div>
                 </div>
-              </div>
-              <!-- 批次进度条 -->
-              <div class="dbi-progress-wrap">
-                <div class="dbi-progress-bar">
-                  <div
-                    class="dbi-progress-fill"
-                    :style="{ width: batchProgress(drawerBatch) + '%', background: batchProgressTone(drawerBatch) }"
-                  ></div>
+                <div class="dbi-progress-wrap">
+                  <div class="dbi-progress-top">
+                    <span>批次进度</span>
+                    <strong>{{ batchProgress(drawerBatch) }}%</strong>
+                  </div>
+                  <div class="dbi-progress-bar">
+                    <div
+                      class="dbi-progress-fill"
+                      :style="{ width: batchProgress(drawerBatch) + '%', background: batchProgressTone(drawerBatch) }"
+                    ></div>
+                  </div>
                 </div>
-                <span class="dbi-progress-text">{{ batchProgress(drawerBatch) }}%</span>
               </div>
             </div>
 
@@ -1239,33 +1464,70 @@ onUnmounted(() => {
               </button>
             </div>
 
-            <!-- 移动端拖拽条 -->
-            <div class="drawer-drag-bar"><span></span></div>
-
             <!-- 订单列表 -->
-            <div class="drawer-body">
+            <div ref="drawerBodyRef" class="drawer-body">
               <div v-if="drawerLoading" class="drawer-loading">
                 <div class="spinner"></div>
                 <span>加载中...</span>
               </div>
               <template v-else-if="drawerOrders.length">
+                <div class="drawer-order-count">
+                  <span class="drawer-order-count-badge">{{ drawerOrders.length }}</span>
+                  条订单
+                </div>
                 <div v-for="(order, idx) in drawerOrders" :key="order.id" class="order-card" :data-order-no="order.order_no">
-                  <div class="oc-head">
+                  <div class="oc-card-top">
                     <span class="oc-idx">#{{ idx + 1 }}</span>
-                    <span class="oc-no mono">{{ order.order_no }}</span>
                     <span v-if="isOwnBatch && pendingOrderIds.includes(order.id)" class="oc-refund-pending">退款申请中</span>
                     <button
                       v-else-if="isOwnBatch && !['completed','refunded','cancelled'].includes(order.order_status)"
+                      type="button"
                       class="oc-refund-btn"
                       :disabled="refundingOrderId === order.id"
                       @click.stop="requestOrderRefund(order)"
                     >{{ refundingOrderId === order.id ? '提交中...' : '申请退款' }}</button>
-                    <span class="oc-status" :style="{ color: orderStatusView(order).color }">{{ orderStatusView(order).label }}</span>
+                    <span class="oc-status-pill" :style="{ color: orderStatusView(order).color, background: orderStatusView(order).color + '14', borderColor: orderStatusView(order).color + '40' }">{{ orderStatusView(order).label }}</span>
                   </div>
-                  <div class="oc-url">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-                    <a :href="order.note_url" target="_blank" rel="noopener" @click.stop>{{ order.note_url }}</a>
+
+                  <div class="oc-card-main">
+                    <div class="oc-avatar-wrap">
+                      <img
+                        v-if="orderAvatarUrl(order) && !showOrderAvatarFallback(order)"
+                        class="oc-avatar"
+                        :src="orderAvatarUrl(order)"
+                        :alt="orderAuthorName(order) || '笔记头像'"
+                        loading="lazy"
+                        @error="onOrderAvatarError(order.id)"
+                      />
+                      <span v-if="showOrderAvatarFallback(order)" class="oc-avatar-fallback">{{ orderAvatarInitial(order) }}</span>
+                    </div>
+                    <div class="oc-note-block">
+                      <p v-if="orderNoteTitle(order)" class="oc-title">{{ orderNoteTitle(order) }}</p>
+                      <p v-else class="oc-title oc-title-muted">未获取笔记标题</p>
+                      <p v-if="orderAuthorName(order)" class="oc-author">{{ orderAuthorName(order) }}</p>
+                    </div>
                   </div>
+
+                  <p class="oc-order-no mono">{{ order.order_no }}</p>
+
+                  <div v-if="order.note_url" class="oc-url-row">
+                    <a class="oc-url" :href="order.note_url" target="_blank" rel="noopener" @click.stop>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                      <span>{{ order.note_url }}</span>
+                    </a>
+                    <button
+                      type="button"
+                      class="oc-url-copy"
+                      :class="{ copied: copiedNoteUrlId === order.id }"
+                      :title="copiedNoteUrlId === order.id ? '已复制' : '复制链接'"
+                      aria-label="复制链接"
+                      @click.stop="copyNoteUrl(order.note_url, order.id)"
+                    >
+                      <svg v-if="copiedNoteUrlId !== order.id" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                      <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    </button>
+                  </div>
+
                   <div class="oc-details">
                     <div class="oc-detail">
                       <span class="oc-dl">类型</span>
@@ -1286,13 +1548,16 @@ onUnmounted(() => {
                   </div>
                   <!-- 订单进度条 -->
                   <div class="oc-progress-wrap">
+                    <div class="oc-progress-top">
+                      <span>完成进度</span>
+                      <strong :style="{ color: orderProgressTextColor(order) }">{{ orderProgress(order) }}%</strong>
+                    </div>
                     <div class="oc-progress-bar">
                       <div
                         class="oc-progress-fill"
                         :style="{ width: orderProgress(order) + '%', background: orderProgressTone(order) }"
                       ></div>
                     </div>
-                    <span class="oc-progress-text" :style="{ color: orderProgressTextColor(order) }">{{ orderProgress(order) }}%</span>
                   </div>
 
                   <!-- 失败原因 + 联系客服提示 -->
@@ -1422,29 +1687,82 @@ onUnmounted(() => {
                 <span>加载中...</span>
               </div>
               <template v-else-if="supDrawerRecords.length">
-                <div v-for="(r, idx) in supDrawerRecords" :key="r.id" class="sup-card" :class="{ 'sup-card--approvable': canApproveRecord(r) }">
-                  <div class="sup-card-head">
-                    <span class="sup-card-idx">#{{ idx + 1 }}</span>
-                    <a class="sup-card-order sup-link" @click.stop="goToOrder(r.batch_id, r.order_no)" title="查看订单">{{ r.order_no }}</a>
+                <div class="drawer-order-count">
+                  <span class="drawer-order-count-badge">{{ supDrawerRecords.length }}</span>
+                  条补单
+                </div>
+                <div
+                  v-for="(r, idx) in supDrawerRecords"
+                  :key="r.id"
+                  class="order-card sup-order-card"
+                  :class="{ 'sup-order-card--approvable': canApproveRecord(r) }"
+                >
+                  <div class="oc-card-top">
+                    <span class="oc-idx">#{{ idx + 1 }}</span>
                     <span
-                      class="status-pill small"
-                      :style="{ color: rsc(r.status).color, background: rsc(r.status).bg, borderColor: rsc(r.status).color }"
+                      class="oc-status-pill"
+                      :style="{ color: rsc(r.status).color, background: rsc(r.status).color + '14', borderColor: rsc(r.status).color + '40' }"
                     >{{ rsc(r.status).label }}</span>
                   </div>
-                  <div class="sup-card-body">
-                    <div class="sup-card-field">
-                      <span class="sup-card-label">产品</span>
-                      <span class="sup-card-val">{{ r.product_name || '-' }}</span>
+
+                  <div class="oc-card-main">
+                    <div class="oc-avatar-wrap">
+                      <img
+                        v-if="orderAvatarUrl(supAsOrder(r)) && !showOrderAvatarFallback(supAsOrder(r))"
+                        class="oc-avatar"
+                        :src="orderAvatarUrl(supAsOrder(r))"
+                        :alt="orderAuthorName(supAsOrder(r)) || '笔记头像'"
+                        loading="lazy"
+                        @error="onOrderAvatarError(supAsOrder(r).id)"
+                      />
+                      <span v-if="showOrderAvatarFallback(supAsOrder(r))" class="oc-avatar-fallback">{{ orderAvatarInitial(supAsOrder(r)) }}</span>
                     </div>
-                    <div class="sup-card-field">
-                      <span class="sup-card-label">差额</span>
-                      <strong class="sup-card-val fail-num">{{ r.shortage_quantity || 0 }}</strong>
-                    </div>
-                    <div class="sup-card-field">
-                      <span class="sup-card-label">时间</span>
-                      <span class="sup-card-val sup-card-time">{{ fmtTime(r.created_at) }}</span>
+                    <div class="oc-note-block">
+                      <p v-if="orderNoteTitle(supAsOrder(r))" class="oc-title">{{ orderNoteTitle(supAsOrder(r)) }}</p>
+                      <p v-else class="oc-title oc-title-muted">未获取笔记标题</p>
+                      <p v-if="orderAuthorName(supAsOrder(r))" class="oc-author">{{ orderAuthorName(supAsOrder(r)) }}</p>
                     </div>
                   </div>
+
+                  <p class="oc-order-no mono">{{ r.order_no }}</p>
+
+                  <div v-if="supAsOrder(r).note_url" class="oc-url-row">
+                    <a class="oc-url" :href="supAsOrder(r).note_url" target="_blank" rel="noopener" @click.stop>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                      <span>{{ supAsOrder(r).note_url }}</span>
+                    </a>
+                    <button
+                      type="button"
+                      class="oc-url-copy"
+                      :class="{ copied: copiedNoteUrlId === supAsOrder(r).id }"
+                      :title="copiedNoteUrlId === supAsOrder(r).id ? '已复制' : '复制链接'"
+                      aria-label="复制链接"
+                      @click.stop="copyNoteUrl(supAsOrder(r).note_url, supAsOrder(r).id)"
+                    >
+                      <svg v-if="copiedNoteUrlId !== supAsOrder(r).id" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                      <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    </button>
+                  </div>
+
+                  <div class="oc-details">
+                    <div class="oc-detail">
+                      <span class="oc-dl">类型</span>
+                      <span class="tag type-tag">{{ r.product_name || '-' }}</span>
+                    </div>
+                    <div class="oc-detail">
+                      <span class="oc-dl">下单数</span>
+                      <strong>{{ r.ordered_quantity }}</strong>
+                    </div>
+                    <div class="oc-detail">
+                      <span class="oc-dl">完成数</span>
+                      <strong class="ok-num">{{ r.actual_quantity || 0 }}</strong>
+                    </div>
+                    <div class="oc-detail">
+                      <span class="oc-dl">差额</span>
+                      <strong class="fail-num">{{ r.shortage_quantity || 0 }}</strong>
+                    </div>
+                  </div>
+
                   <div v-if="canApproveRecord(r)" class="sup-card-actions">
                     <button type="button" class="btn-approve" :disabled="!!approvingId" @click.stop="approveSupplement(r)">
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
@@ -1455,9 +1773,9 @@ onUnmounted(() => {
                       驳回
                     </button>
                   </div>
-                  <div v-else-if="r.status === 'rejected' && r.reason_message" class="sup-card-rejected">
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                    {{ r.reason_message }}
+                  <div v-else-if="r.status === 'rejected' && supRejectReason(r)" class="oc-fail-reason">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                    <span>{{ supRejectReason(r) }}</span>
                   </div>
                 </div>
               </template>
@@ -1490,16 +1808,86 @@ onUnmounted(() => {
 
 <style scoped>
 .records-page {
-  padding: 18px 28px 28px;
+  --rp-primary: #2f6df6;
+  --rp-primary-soft: rgba(47, 109, 246, 0.1);
+  --rp-accent: #ee4d7a;
+  --rp-purple: #5a8ef8;
+  --rp-text: #152033;
+  --rp-text-2: #425066;
+  --rp-text-3: #8a95a8;
+  --rp-border: #e8eef7;
+  --rp-radius: 14px;
+  --rp-shadow: 0 4px 24px rgba(21, 32, 51, 0.06), 0 1px 3px rgba(21, 32, 51, 0.04);
+  --rp-shadow-lg: 0 12px 40px rgba(47, 109, 246, 0.08), 0 4px 12px rgba(21, 32, 51, 0.04);
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px 20px 40px;
+}
+
+/* ========== 页面头部 ========== */
+.page-hero {
+  position: relative;
+  border-radius: var(--rp-radius);
+  overflow: hidden;
+  margin-bottom: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  box-shadow: var(--rp-shadow-lg);
+}
+
+.hero-bg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 75% 55% at 8% 0%, rgba(238, 77, 122, 0.1), transparent 52%),
+    radial-gradient(ellipse 65% 50% at 92% 100%, rgba(47, 109, 246, 0.12), transparent 48%),
+    linear-gradient(135deg, #f8faff 0%, #fff6f9 42%, #f3f7ff 100%);
+}
+
+.hero-content {
+  position: relative;
+  padding: 22px 26px;
+}
+
+.hero-badge {
+  display: inline-flex;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(47, 109, 246, 0.1);
+  color: var(--rp-primary);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.hero-title {
+  font-size: 22px;
+  font-weight: 900;
+  color: var(--rp-text);
+  letter-spacing: -0.3px;
+  line-height: 1.2;
+}
+
+.hero-desc {
+  margin-top: 6px;
+  font-size: 13.5px;
+  color: var(--rp-text-3);
+  line-height: 1.55;
+  max-width: 520px;
 }
 
 /* ========== 问题订单下载栏 ========== */
 .problem-bar {
-  display: flex; align-items: center; gap: 12px;
-  margin-bottom: 16px; padding: 12px 18px;
-  background: #fff; border-radius: 12px;
-  box-shadow: 0 2px 10px rgba(21,32,51,.04);
-  border-left: 3px solid #ff4d4f;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 14px 18px;
+  background: linear-gradient(135deg, #fffafa, #fff);
+  border-radius: var(--rp-radius);
+  box-shadow: var(--rp-shadow);
+  border: 1px solid #ffe1df;
+  border-left: 4px solid #ff4d4f;
 }
 .problem-btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -1572,25 +1960,44 @@ onUnmounted(() => {
 .stats-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 18px;
+  gap: 14px;
   margin-bottom: 18px;
 }
 
 .stat-card {
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  padding: 20px 22px;
-  min-height: 110px;
+  gap: 14px;
+  padding: 18px 20px;
+  min-height: 108px;
   background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 4px 18px rgba(21, 32, 51, 0.06);
-  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 240ms ease;
+  border-radius: var(--rp-radius);
+  border: 1px solid var(--rp-border);
+  box-shadow: var(--rp-shadow);
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 240ms ease, border-color 200ms ease;
+  position: relative;
+  overflow: hidden;
 }
+
+.stat-card::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  opacity: 0.85;
+}
+
+.card-batch::after { background: linear-gradient(90deg, #ee4d7a, #8b7bf7); }
+.card-orders::after { background: linear-gradient(90deg, #42c978, #38b2ac); }
+.card-processing::after { background: linear-gradient(90deg, #f5a623, #f09d3d); }
+.card-spent::after { background: linear-gradient(90deg, #ff6b6b, #ee4d7a); }
 
 .stat-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 12px 28px rgba(21, 32, 51, 0.1);
+  box-shadow: var(--rp-shadow-lg);
+  border-color: #dfe7f3;
 }
 
 .stat-top {
@@ -1621,14 +2028,18 @@ onUnmounted(() => {
 }
 
 .stat-value {
-  align-self: flex-start;
-  margin-left: 52px;
-  font-size: 28px;
-  color: #152033;
+  font-size: 26px;
+  font-weight: 900;
+  color: var(--rp-text);
   line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.5px;
 }
 
-.stat-value.spent { color: #ee4d7a; }
+.stat-value.spent {
+  color: var(--rp-accent);
+  font-size: 22px;
+}
 
 /* ========== 移动端 tab ========== */
 
@@ -1640,9 +2051,9 @@ onUnmounted(() => {
 .mobile-tab {
   flex: 1;
   padding: 14px 0;
-  font-size: 15px;
-  font-weight: 700;
-  color: #9aa5b5;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--rp-text-3);
   background: none;
   border: none;
   border-bottom: 2.5px solid transparent;
@@ -1651,8 +2062,8 @@ onUnmounted(() => {
 }
 
 .mobile-tab.active {
-  color: #152033;
-  border-bottom-color: #5b8def;
+  color: var(--rp-primary);
+  border-bottom-color: var(--rp-primary);
 }
 
 /* ========== 移动端统计网格（默认隐藏） ========== */
@@ -1666,7 +2077,7 @@ onUnmounted(() => {
 .msg-val { display: block; font-size: 18px; font-weight: 800; color: #152033; }
 .msg-val.ok { color: #42c978; }
 .msg-val.fail { color: #ff4d4f; }
-.msg-val.accent { color: #5b8def; font-size: 15px; }
+.msg-val.accent { color: var(--rp-primary); font-size: 15px; }
 .msg-cell.amount .msg-label { white-space: nowrap; }
 .action-amount { display: none; }
 
@@ -1674,8 +2085,9 @@ onUnmounted(() => {
 
 .records-body {
   background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 4px 18px rgba(21, 32, 51, 0.06);
+  border-radius: var(--rp-radius);
+  border: 1px solid var(--rp-border);
+  box-shadow: var(--rp-shadow);
   overflow: hidden;
 }
 
@@ -1683,32 +2095,110 @@ onUnmounted(() => {
 
 .filter-bar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  padding: 18px 24px;
-  border-bottom: 1px solid #f0f2f5;
-  border-top: 3px solid transparent;
-  background-clip: padding-box;
-  position: relative;
+  gap: 16px;
+  padding: 18px 22px;
+  border-bottom: 1px solid #f0f2f7;
+  background: linear-gradient(180deg, #fcfdff, #fff);
 }
 
-.filter-bar::before {
-  content: '';
-  position: absolute;
-  top: -3px;
-  left: 0;
-  right: 0;
-  height: 3px;
-  background: linear-gradient(135deg, #ee4d7a, #8b7bf7, #5b8def);
-  border-radius: 12px 12px 0 0;
-}
-
-.filter-left {
+.filter-toolbar {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 12px;
   flex: 1;
   min-width: 0;
+}
+
+.filter-toolbar > .module-select {
+  align-self: flex-start;
+}
+
+/* 补单记录：第一行模块+条数，第二行状态+按钮 */
+.filter-toolbar--sup {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  gap: 10px 12px;
+  align-items: center;
+}
+
+.filter-toolbar--sup > .module-select {
+  grid-column: 1;
+  grid-row: 1;
+  align-self: stretch;
+  width: 12%;
+  min-width: 0;
+}
+
+.filter-toolbar--sup > .module-select .module-trigger {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.filter-toolbar--sup .filter-sup-head-total {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.filter-toolbar--sup .filter-form--sup {
+  grid-column: 1 / -1;
+  grid-row: 2;
+}
+
+.filter-form--sup {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px 12px;
+  width: 100%;
+}
+
+.filter-actions--btns-only {
+  flex-direction: row;
+  align-items: center;
+}
+
+.filter-sup-mobile-total {
+  display: none;
+}
+
+.filter-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px 12px;
+  width: 100%;
+}
+
+.filter-fields {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+.filter-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+  justify-self: end;
+}
+
+.filter-btns {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 /* ========== 模块下拉选择 ========== */
@@ -1722,12 +2212,12 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  height: 36px;
-  padding: 0 12px 0 14px;
-  border-radius: 8px;
-  border: 1px solid #dfe5ec;
+  height: 38px;
+  padding: 0 14px 0 16px;
+  border-radius: 10px;
+  border: 1.5px solid #e4ebf5;
   background: #fff;
-  color: #152033;
+  color: var(--rp-text);
   font-size: 13px;
   font-weight: 700;
   cursor: pointer;
@@ -1823,42 +2313,79 @@ onUnmounted(() => {
   transform: scale(0.95) translateY(-4px);
 }
 
-.filter-inputs {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.filter-input,
+.filter-fields :deep(.filter-date.el-date-editor) {
+  width: 152px;
+  height: 38px;
+  flex-shrink: 0;
 }
 
-.filter-inputs input {
-  width: 160px;
-  height: 36px;
+.filter-input {
   padding: 0 14px;
-  border: 1px solid #dfe5ec;
-  border-radius: 6px;
+  border: 1.5px solid #e4ebf5;
+  border-radius: 10px;
   font-size: 13px;
-  color: #425066;
+  color: var(--rp-text-2);
   outline: none;
   background: #fff;
   transition: border-color 200ms ease, box-shadow 200ms ease;
 }
 
-.filter-inputs input:focus {
+.filter-field-agent {
+  min-width: 160px;
+  max-width: 200px;
+}
+
+.filter-fields :deep(.filter-date.el-date-editor) {
+  --el-date-editor-width: 152px;
+}
+
+.filter-fields :deep(.filter-date .el-input__wrapper) {
+  min-height: 36px;
+  padding: 0 10px 0 11px;
+  border-radius: 10px;
+  box-shadow: none !important;
+  border: 1.5px solid #e4ebf5;
+  background: #fff;
+}
+
+.filter-fields :deep(.filter-date .el-input__inner) {
+  font-size: 13px;
+  color: var(--rp-text-2);
+}
+
+.filter-fields :deep(.filter-date .el-input__inner::placeholder) {
+  color: #b0b8c6;
+  font-size: 13px;
+}
+
+.filter-fields :deep(.filter-date .el-input__prefix-inner),
+.filter-fields :deep(.filter-date .el-input__suffix-inner) {
+  font-size: 14px;
+  color: #9aa5b5;
+}
+
+.filter-input:focus {
   border-color: #8b7bf7;
   box-shadow: 0 0 0 3px rgba(139, 123, 247, 0.1);
 }
 
-.filter-inputs input::placeholder { color: #b0b8c6; }
+.filter-input::placeholder { color: #b0b8c6; }
 
 .btn-search {
-  height: 36px;
-  padding: 0 24px;
-  border-radius: 6px;
-  background: linear-gradient(135deg, #5b8def, #8b7bf7);
+  height: 38px;
+  min-width: 76px;
+  padding: 0 20px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, var(--rp-accent) 0%, var(--rp-purple) 50%, var(--rp-primary) 100%);
   color: #fff;
   font-size: 13px;
   font-weight: 700;
   border: none;
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  box-shadow: 0 4px 14px rgba(47, 109, 246, 0.22);
   transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 240ms ease;
 }
 
@@ -1870,115 +2397,213 @@ onUnmounted(() => {
 .btn-search:active { transform: scale(0.97); }
 
 .btn-reset {
-  height: 36px;
+  height: 38px;
+  min-width: 76px;
   padding: 0 18px;
-  border-radius: 6px;
-  background: #f6f8fc;
+  border-radius: 10px;
+  background: #fff;
   color: #647184;
   font-size: 13px;
   font-weight: 700;
-  border: 1px solid #e8edf4;
+  border: 1.5px solid #e4ebf5;
   cursor: pointer;
-  transition: background 200ms ease, color 200ms ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 200ms ease, color 200ms ease, border-color 200ms ease;
 }
 
 .btn-reset:hover { background: #eef3ff; color: #8b7bf7; }
 
 .filter-total {
-  font-size: 14px;
-  color: #9aa5b5;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: #f5f8ff;
+  border: 1px solid #e4ecff;
+  font-size: 13px;
+  color: var(--rp-text-3);
   font-weight: 600;
   white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.filter-total-num {
+  font-size: 15px;
+  font-weight: 900;
+  color: var(--rp-primary);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ========== 批次列表 ========== */
 
 .batch-list {
-  padding: 16px 24px 24px;
+  padding: 12px 16px 20px;
+  background: #fff;
+}
+
+.batch-list-head,
+.batch-row {
+  --batch-cols: minmax(260px, 1.5fr) 56px 56px 56px minmax(100px, 0.9fr) 88px;
+  display: grid;
+  grid-template-columns: var(--batch-cols);
+  align-items: center;
+  column-gap: 16px;
+}
+
+.batch-list-head.no-fail-col,
+.batch-row.no-fail-col {
+  --batch-cols: minmax(260px, 1.5fr) 56px 56px minmax(100px, 0.9fr) 88px;
+}
+
+.batch-list-head {
+  padding: 0 18px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--rp-text-3);
+}
+
+.blh-stat {
+  text-align: center;
+}
+
+.blh-amount {
+  text-align: right;
+}
+
+.blh-action {
+  text-align: right;
 }
 
 .batch-row {
   position: relative;
-  display: grid;
-  grid-template-columns: 1.2fr 90px 90px 90px 160px 130px;
-  align-items: center;
-  padding: 20px 24px;
-  margin-bottom: 12px;
-  border-radius: 10px;
-  border: 1px solid #f0f2f5;
-  border-left: 4px solid var(--bdr, #d0d7e2);
+  padding: 14px 18px;
+  margin-bottom: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--rp-border);
   background: #fff;
   cursor: pointer;
   overflow: hidden;
-  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 240ms ease;
+  transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
 }
 
 .batch-progress-bar {
   position: absolute;
   left: 0;
   bottom: 0;
-  height: 3px;
+  height: 2px;
   width: var(--prog, 0%);
-  background: var(--prog-color, #5b8def);
-  border-radius: 0 3px 3px 0;
+  background: var(--prog-color, var(--rp-primary));
+  border-radius: 0 2px 2px 0;
   transition: width 600ms cubic-bezier(0.22, 1, 0.36, 1);
-  opacity: 0.6;
+  opacity: 0.85;
 }
 
 .batch-row:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 8px 24px rgba(21, 32, 51, 0.07);
+  border-color: rgba(47, 109, 246, 0.28);
+  background: #fafbff;
+  box-shadow: 0 4px 16px rgba(47, 109, 246, 0.06);
 }
 
 .batch-row:last-child { margin-bottom: 0; }
 
-/* 普通用户无「失败」列：用 5 列模板，避免金额列落进窄列被折行 */
-.batch-row.no-fail-col {
-  grid-template-columns: 1.2fr 90px 90px 160px 130px;
+.batch-info {
+  min-width: 0;
 }
 
 .batch-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
   flex-wrap: wrap;
+}
+
+.batch-meta-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.batch-chip {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  border: none;
+}
+
+.batch-chip--type {
+  color: var(--rp-primary);
+  background: var(--rp-primary-soft);
+}
+
+.batch-chip--live {
+  color: #15803d;
+  background: #ecfdf3;
+}
+
+.batch-chip--pgy {
+  color: #db2777;
+  background: #fdf2f8;
+}
+
+.batch-chip--status {
+  font-weight: 700;
+}
+
+.batch-chip--user {
+  color: var(--rp-text-2);
+  background: #f1f5f9;
+}
+
+.batch-chip--agent {
+  color: #b45309;
+  background: #fffbeb;
+}
+
+.batch-chip--direct {
+  color: #15803d;
+  background: #f0fdf4;
+}
+
+.batch-chip--warn {
+  color: #d97706;
+  background: #fffbeb;
 }
 
 .batch-no {
   font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
-  font-size: 14px;
-  font-weight: 800;
-  color: #152033;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--rp-text);
+  letter-spacing: -0.15px;
 }
 
 .tag {
   display: inline-flex;
   align-items: center;
-  padding: 1px 8px;
-  border-radius: 4px;
-  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
   font-weight: 600;
-  border: 1px solid;
-  line-height: 1.6;
+  border: none;
+  line-height: 1.3;
+  white-space: nowrap;
 }
 
 .type-tag {
-  color: #5b8def;
-  background: #eef3ff;
-  border-color: #c8d9f7;
-}
-
-.method-tag {
-  color: #9aa5b5;
-  background: #f6f8fc;
-  border-color: #e8edf4;
-}
-
-.no-upstream-tag {
-  color: #f59e0b;
-  background: #fef3c7;
-  border-color: #fde68a;
+  color: var(--rp-primary);
+  background: var(--rp-primary-soft);
 }
 
 .no-upstream-hint {
@@ -1989,56 +2614,77 @@ onUnmounted(() => {
 
 .batch-time {
   font-size: 12px;
-  color: #9aa5b5;
+  color: var(--rp-text-3);
+  line-height: 1.45;
 }
 
 .batch-stat {
   text-align: center;
-}
-
-.stat-lbl {
-  display: block;
-  font-size: 12px;
-  color: #9aa5b5;
-  margin-bottom: 4px;
+  padding: 0;
+  background: transparent;
+  border: none;
 }
 
 .batch-stat strong {
-  font-size: 20px;
-  color: #152033;
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--rp-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.batch-stat--ok strong {
+  color: #16a34a;
+}
+
+.batch-stat--fail strong.is-hot {
+  color: #dc2626;
 }
 
 .batch-amount {
-  text-align: center;
+  text-align: right;
+  justify-self: end;
+  padding: 0 4px;
+  background: transparent;
+  border: none;
 }
 
 .batch-amount strong {
-  font-size: 18px;
-  color: #152033;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--rp-text);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .batch-action {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 10px;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: nowrap;
 }
 
 .batch-action .flex_tab {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .status-pill {
   display: inline-flex;
   align-items: center;
-  padding: 4px 14px;
-  border-radius: 4px;
-  font-size: 13px;
-  font-weight: 700;
+  justify-content: center;
+  min-width: 56px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
   border: 1px solid;
   white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1.2;
 }
 
 .export-icon-btn {
@@ -2047,10 +2693,10 @@ onUnmounted(() => {
   border: none; background: transparent; color: #c0c8d4;
   cursor: pointer; transition: all 180ms ease; flex-shrink: 0;
 }
-.export-icon-btn:hover { background: #f3f0ff; color: #8b7bf7; }
+.export-icon-btn:hover { background: var(--rp-primary-soft); color: var(--rp-primary); }
 .export-icon-btn:active { transform: scale(.9); }
 .export-icon-btn:disabled { pointer-events: none; }
-.export-icon-btn.loading { color: #8b7bf7; }
+.export-icon-btn.loading { color: var(--rp-primary); }
 .spin-icon { animation: spin .8s linear infinite; }
 
 .arrow-icon {
@@ -2060,17 +2706,36 @@ onUnmounted(() => {
 }
 
 .batch-row:hover .arrow-icon {
-  color: #8b7bf7;
+  color: var(--rp-primary);
   transform: translateX(3px);
 }
 
 /* ========== 空状态 ========== */
 
 .empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
   text-align: center;
-  padding: 60px 0;
-  color: #9aa5b5;
-  font-size: 15px;
+  padding: 64px 24px;
+  color: var(--rp-text-3);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.empty-spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid #e8edf4;
+  border-top-color: var(--rp-primary);
+  border-radius: 50%;
+  animation: rp-spin 0.7s linear infinite;
+}
+
+@keyframes rp-spin {
+  to { transform: rotate(360deg); }
 }
 
 /* ========== 分页 ========== */
@@ -2078,7 +2743,13 @@ onUnmounted(() => {
 .pagination-wrap {
   display: flex;
   justify-content: flex-end;
-  padding: 12px 24px 20px;
+  padding: 14px 22px 22px;
+  border-top: 1px solid #f0f2f7;
+  background: #fff;
+}
+
+.pagination-wrap :deep(.el-pagination.is-background .el-pager li.is-active) {
+  background: linear-gradient(135deg, var(--rp-purple), var(--rp-primary));
 }
 
 /* ========== 补单记录 ========== */
@@ -2094,18 +2765,62 @@ onUnmounted(() => {
   color: #fff;
 }
 
-/* 补单批次行 */
+/* 补单列表表头 + 桌面列宽（标签在表头，行内仅数字） */
+.sup-batch-list-head,
 .sup-batch-row {
-  --bdr: #8b7bf7;
-  --prog: 0%;
-  --prog-color: #8b7bf7;
+  --batch-cols: minmax(220px, 1.45fr) minmax(64px, 0.5fr) minmax(64px, 0.5fr) minmax(76px, 0.55fr) minmax(88px, 0.65fr) minmax(108px, 0.85fr);
 }
 
-.batch-row .batch-info .batch-head .user-tag,
-.sup-batch-row .batch-info .batch-head .user-tag {
-  background: #f4f0ff;
-  color: #8b7bf7;
-  border: 1px solid #d4ccf7;
+.sup-batch-list-head.sup-batch-list-head--no-agent,
+.sup-batch-row.sup-batch-row--no-agent {
+  --batch-cols: minmax(240px, 1.5fr) minmax(72px, 0.55fr) minmax(72px, 0.55fr) minmax(96px, 0.7fr) minmax(108px, 0.85fr);
+}
+
+.sup-batch-list-head {
+  padding: 0 18px 8px;
+}
+
+.sup-batch-list-head .blh-stat,
+.sup-batch-row .batch-stat {
+  text-align: center;
+}
+
+.sup-batch-row .batch-stat strong {
+  font-size: 16px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.sup-batch-row .batch-stat--pending strong:not(.fail-num) {
+  color: var(--rp-text-3);
+}
+
+.sup-batch-row .batch-amount--shortage {
+  text-align: right;
+  justify-self: end;
+}
+
+.sup-batch-row .batch-amount--shortage strong {
+  font-size: 15px;
+  white-space: nowrap;
+}
+
+/* 补单批次行（与下单记录共用 batch-row 样式） */
+.sup-batch-row .batch-no.sup-link {
+  font-family: 'SF Mono', Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--rp-primary);
+  text-decoration: none;
+}
+
+.sup-batch-row .batch-no.sup-link:hover {
+  text-decoration: underline;
+}
+
+/* 补单列表：统计区与下单记录移动端一致 */
+.mobile-stat-grid.sup-grid .msg-cell.amount .msg-val.accent {
+  color: #dc2626;
 }
 
 /* 补单状态提示 */
@@ -2236,89 +2951,15 @@ onUnmounted(() => {
 .sd-chip.danger { background: #fff1f0; }
 .sd-chip.danger strong { color: #ff4d4f; }
 
-/* 补单记录卡片 */
-.sup-card {
-  background: #fff;
-  border: 1px solid #eef0f5;
-  border-radius: 10px;
-  padding: 16px;
-  margin-bottom: 12px;
-  transition: border-color 200ms ease, box-shadow 200ms ease;
-}
-
-.sup-card:hover {
-  border-color: #d4ccf7;
-  box-shadow: 0 2px 12px rgba(139, 123, 247, 0.08);
-}
-
-.sup-card--approvable {
-  border-left: 3px solid #8b7bf7;
-}
-
-.sup-card-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
-}
-
-.sup-card-idx {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #8b7bf7, #6c5ce7);
-  color: #fff;
-  font-size: 11px;
-  font-weight: 700;
-  display: grid;
-  place-items: center;
-  flex-shrink: 0;
-}
-
-.sup-card-order {
-  font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
-  font-size: 12.5px;
-  font-weight: 600;
-}
-
-.sup-card-body {
-  display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
-  gap: 8px;
-  padding: 10px 0;
-  border-top: 1px dashed #eef0f5;
-  border-bottom: 1px dashed #eef0f5;
-}
-
-.sup-card-field {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.sup-card-label {
-  font-size: 11px;
-  color: #9aa5b5;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.sup-card-val {
-  font-size: 14px;
-  color: #152033;
-  font-weight: 600;
-}
-
-.sup-card-time {
-  font-size: 12px;
-  font-weight: 400;
-  color: #647184;
+/* 补单抽屉明细（复用 order-card） */
+.sup-order-card--approvable {
+  border-left: 3px solid var(--rp-primary);
 }
 
 .sup-card-actions {
   display: flex;
   gap: 8px;
-  margin-top: 12px;
+  flex-wrap: wrap;
 }
 
 .sup-card-actions .btn-approve,
@@ -2328,20 +2969,9 @@ onUnmounted(() => {
   gap: 4px;
   height: 32px;
   padding: 0 16px;
-  border-radius: 6px;
-  font-size: 13px;
-}
-
-.sup-card-rejected {
-  margin-top: 10px;
-  padding: 8px 12px;
-  background: #fff1f0;
-  border-radius: 6px;
+  border-radius: 8px;
   font-size: 12px;
-  color: #ff4d4f;
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  font-weight: 700;
 }
 
 /* 高亮脉冲动画（定位订单时） */
@@ -2362,11 +2992,13 @@ onUnmounted(() => {
 }
 
 .filter-select {
-  height: 36px;
+  height: 38px;
   padding: 0 32px 0 14px;
-  border: 1px solid #dfe5ec;
-  border-radius: 6px;
+  border: 1.5px solid #e4ebf5;
+  border-radius: 10px;
   font-size: 13px;
+  font-weight: 400;
+  line-height: 1.25;
   color: #425066;
   outline: none;
   background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpolyline points='1 1 5 5 9 1' fill='none' stroke='%239aa5b5' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 12px center;
@@ -2379,6 +3011,7 @@ onUnmounted(() => {
   border-color: #8b7bf7;
   box-shadow: 0 0 0 3px rgba(139, 123, 247, 0.1);
 }
+
 
 /* 补单操作按钮 */
 .sup-actions {
@@ -2437,6 +3070,8 @@ onUnmounted(() => {
   background: rgba(15, 23, 42, 0.45);
   display: flex;
   justify-content: flex-end;
+  backdrop-filter: blur(2px);
+  overscroll-behavior: none;
 }
 
 .order-drawer {
@@ -2452,9 +3087,9 @@ onUnmounted(() => {
 
 .drawer-header {
   padding: 22px 24px 18px;
-  border-bottom: 1px solid #f0f2f5;
+  border-bottom: 1px solid #f0f2f7;
   flex-shrink: 0;
-  background: linear-gradient(180deg, #fafbfd, #fff);
+  background: linear-gradient(180deg, #f8faff, #fff);
 }
 
 .drawer-title-row {
@@ -2508,101 +3143,121 @@ onUnmounted(() => {
   color: #ef4444;
 }
 
-.drawer-batch-info {
+.drawer-summary {
   display: flex;
   flex-direction: column;
+  gap: 12px;
+}
+
+.drawer-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 
-.dbi-row {
+.drawer-stat {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid #eef2f7;
+  min-width: 0;
 }
 
-.dbi-label {
+.drawer-stat--wide {
+  grid-column: 1 / -1;
+}
+
+.drawer-stat--time .drawer-stat-val {
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: normal;
+  line-height: 1.35;
+}
+
+.drawer-stat--accent {
+  background: linear-gradient(135deg, #fff6f9, #fff);
+  border-color: #ffe4ec;
+}
+
+.drawer-stat--ok .drawer-stat-val { color: #42c978; }
+.drawer-stat--fail .drawer-stat-val { color: #ff4d4f; }
+
+.drawer-stat-label {
+  font-size: 10px;
+  font-weight: 800;
+  color: #8a95a8;
+  text-transform: uppercase;
+  letter-spacing: 0.35px;
+}
+
+.drawer-stat-val {
+  font-size: 15px;
+  font-weight: 900;
+  color: #152033;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.drawer-stat-val.mono {
   font-size: 12px;
-  color: #9aa5b5;
-  min-width: 56px;
-}
-
-.dbi-val {
-  font-size: 13px;
+  font-family: 'SFMono-Regular', Consolas, Menlo, monospace;
+  font-weight: 600;
   color: #425066;
 }
 
-.dbi-val.mono {
-  font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
-  font-weight: 700;
-  color: #152033;
+.drawer-stat-amount {
+  font-size: 18px;
+  color: #ee4d7a;
 }
 
-.status-pill.small {
+.drawer-stat-pill {
+  align-self: flex-start;
+  padding: 3px 10px;
+  border-radius: 999px;
   font-size: 11px;
-  padding: 2px 10px;
+  font-weight: 800;
+  border: 1px solid transparent;
 }
 
-.dbi-summary {
-  display: flex;
-  gap: 10px;
-  margin-top: 8px;
-  flex-wrap: wrap;
-}
-
-.dbi-chip {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 8px 14px;
-  border-radius: 8px;
-  background: #f6f8fc;
-  flex: 1;
-  min-width: 70px;
-}
-
-.dbi-chip span {
-  font-size: 11px;
-  color: #9aa5b5;
-  margin-bottom: 2px;
-}
-
-.dbi-chip strong {
-  font-size: 16px;
-  color: #152033;
-}
-
-.dbi-chip.ok strong { color: #42c978; }
-.dbi-chip.fail strong { color: #ff4d4f; }
-.dbi-chip.amount strong { color: #ee4d7a; font-size: 14px; }
-
-/* 批次进度条 */
 .dbi-progress-wrap {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f8faff;
+  border: 1px solid #eef2f7;
+}
+
+.dbi-progress-top {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-top: 12px;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8a95a8;
+}
+
+.dbi-progress-top strong {
+  font-size: 13px;
+  font-weight: 900;
+  color: #152033;
 }
 
 .dbi-progress-bar {
-  flex: 1;
-  height: 6px;
-  border-radius: 6px;
-  background: #f0f2f5;
+  height: 8px;
+  border-radius: 999px;
+  background: #e8edf4;
   overflow: hidden;
 }
 
 .dbi-progress-fill {
   height: 100%;
-  border-radius: 6px;
+  border-radius: 999px;
   transition: width 600ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.dbi-progress-text {
-  font-size: 12px;
-  font-weight: 800;
-  color: #647184;
-  min-width: 34px;
-  text-align: right;
 }
 
 /* 拖拽条（仅移动端可见） */
@@ -2610,11 +3265,36 @@ onUnmounted(() => {
   display: none;
 }
 
+.drawer-order-count {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 800;
+  color: #425066;
+  margin-bottom: 12px;
+}
+
+.drawer-order-count-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #8b7bf7, #2f6df6);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 900;
+}
+
 /* 订单列表 */
 .drawer-body {
   flex: 1;
   overflow-y: auto;
   padding: 16px 24px 24px;
+  background: #f8faff;
+  -webkit-overflow-scrolling: touch;
 }
 
 .drawer-loading {
@@ -2647,46 +3327,120 @@ onUnmounted(() => {
 }
 
 .order-card {
-  padding: 16px;
-  border: 1px solid #f0f2f5;
-  border-radius: 10px;
-  margin-bottom: 10px;
-  transition: box-shadow 200ms ease;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 14px 16px;
+  border: 1px solid #edf1f7;
+  border-radius: 16px;
+  margin-bottom: 12px;
+  background: #fff;
+  box-shadow: 0 2px 12px rgba(21, 32, 51, 0.04);
+  transition: box-shadow 200ms ease, border-color 200ms ease;
 }
 
 .order-card:hover {
-  box-shadow: 0 4px 16px rgba(21, 32, 51, 0.06);
+  border-color: #dfe7f3;
+  box-shadow: 0 6px 20px rgba(47, 109, 246, 0.08);
 }
 
 .order-card:last-child { margin-bottom: 0; }
 
-.oc-head {
+.oc-card-top {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.oc-card-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.oc-avatar-wrap {
+  flex-shrink: 0;
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 2px solid #fff;
+  box-shadow: 0 4px 14px rgba(21, 32, 51, 0.1);
+  background: linear-gradient(135deg, #f3f0ff, #eef3ff);
+}
+
+.oc-avatar {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.oc-avatar-fallback {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  font-weight: 900;
+  color: #8b7bf7;
+  background: linear-gradient(135deg, #f3f0ff, #e8f0ff);
+}
+
+.oc-note-block {
+  flex: 1;
+  min-width: 0;
+}
+
+.oc-order-no {
+  margin: -4px 0 0;
+  padding: 0 2px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #8a95a8;
+  word-break: break-all;
+}
+
+.oc-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: #152033;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.oc-title-muted {
+  color: #8a95a8;
+  font-weight: 600;
+}
+
+.oc-author {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #8a95a8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .oc-idx {
   font-size: 12px;
   font-weight: 800;
-  color: #8b7bf7;
-  background: #f3f0ff;
-  padding: 1px 7px;
-  border-radius: 4px;
-}
-
-.oc-no {
-  font-size: 12px;
-  color: #647184;
-}
-
-.oc-no.mono {
-  font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+  color: #2f6df6;
+  background: #eef3ff;
+  padding: 4px 10px;
+  border-radius: 999px;
+  flex-shrink: 0;
 }
 
 .oc-refund-btn {
-  margin-left: auto;
+  margin-left: 0;
   padding: 3px 10px;
   font-size: 11px;
   font-weight: 600;
@@ -2702,7 +3456,7 @@ onUnmounted(() => {
 .oc-refund-btn:disabled { opacity: .5; cursor: not-allowed; }
 
 .oc-refund-pending {
-  margin-left: auto;
+  margin-left: 0;
   font-size: 11px;
   font-weight: 600;
   color: #f59e0b;
@@ -2712,34 +3466,85 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.oc-status {
-  font-size: 12px;
-  font-weight: 700;
+.oc-status-pill {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.oc-url-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 6px 6px 11px;
+  border-radius: 10px;
+  background: #f5f8ff;
+  border: 1px solid #e4ecff;
+  transition: background 180ms ease, border-color 180ms ease;
+}
+
+.oc-url-row:hover {
+  background: #eef3ff;
+  border-color: #c9d6ef;
 }
 
 .oc-url {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 12px;
-  color: #5b8def;
-}
-
-.oc-url svg { flex-shrink: 0; color: #b0b8c6; }
-
-.oc-url a {
+  flex: 1;
+  min-width: 0;
   font-size: 12px;
-  color: #5b8def;
+  color: #2f6df6;
   text-decoration: none;
-  word-break: break-all;
-  line-height: 1.4;
 }
 
-.oc-url a:hover { text-decoration: underline; }
+.oc-url svg { flex-shrink: 0; color: #8b7bf7; }
+
+.oc-url span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.oc-url-copy {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: #fff;
+  color: #2f6df6;
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(47, 109, 246, 0.08);
+  transition: background 180ms ease, color 180ms ease, transform 120ms ease;
+}
+
+.oc-url-copy:hover {
+  background: #eef3ff;
+}
+
+.oc-url-copy:active {
+  transform: scale(0.96);
+}
+
+.oc-url-copy.copied {
+  color: #42c978;
+  background: #f0fff4;
+}
 
 .oc-details {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -2747,7 +3552,21 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
+  padding: 10px 8px;
+  border-radius: 11px;
+  background: #f8faff;
+  border: 1px solid #eef2f7;
+  text-align: center;
+}
+
+.oc-detail:last-child {
+  background: linear-gradient(135deg, #fff6f9, #fff);
+  border-color: #ffe4ec;
+}
+
+.oc-detail:last-child strong {
+  color: #ee4d7a;
 }
 
 .oc-dl {
@@ -2764,31 +3583,38 @@ onUnmounted(() => {
 
 /* 订单进度条 */
 .oc-progress-wrap {
+  padding: 12px 12px 2px;
+  border-radius: 12px;
+  background: #f8faff;
+  border: 1px solid #eef2f7;
+}
+
+.oc-progress-top {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 10px;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #8a95a8;
+}
+
+.oc-progress-top strong {
+  font-size: 12px;
+  font-weight: 900;
 }
 
 .oc-progress-bar {
-  flex: 1;
-  height: 4px;
-  border-radius: 4px;
-  background: #f0f2f5;
+  height: 8px;
+  border-radius: 999px;
+  background: #e8edf4;
   overflow: hidden;
 }
 
 .oc-progress-fill {
   height: 100%;
-  border-radius: 4px;
+  border-radius: 999px;
   transition: width 600ms cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.oc-progress-text {
-  font-size: 11px;
-  font-weight: 800;
-  min-width: 30px;
-  text-align: right;
 }
 
 /* 没有上游提示 */
@@ -3010,34 +3836,122 @@ onUnmounted(() => {
 /* ========== 响应式 ========== */
 
 @media (max-width: 1280px) {
+  .batch-list-head,
   .batch-row {
-    grid-template-columns: 1.2fr 80px 80px 80px 140px 110px;
-    padding: 16px 18px;
+    --batch-cols: minmax(200px, 1.2fr) minmax(56px, 0.5fr) minmax(56px, 0.5fr) minmax(56px, 0.5fr) minmax(96px, 0.75fr) minmax(132px, 0.95fr);
   }
 
+  .batch-list-head.no-fail-col,
   .batch-row.no-fail-col {
-    grid-template-columns: 1.2fr 80px 80px 140px 110px;
+    --batch-cols: minmax(200px, 1.2fr) minmax(56px, 0.5fr) minmax(56px, 0.5fr) minmax(96px, 0.75fr) minmax(132px, 0.95fr);
   }
 
-  .batch-stat strong { font-size: 18px; }
-  .batch-amount strong { font-size: 16px; }
+  .sup-batch-list-head,
+  .sup-batch-row {
+    --batch-cols: minmax(180px, 1.2fr) minmax(56px, 0.48fr) minmax(56px, 0.48fr) minmax(68px, 0.52fr) minmax(80px, 0.6fr) minmax(100px, 0.8fr);
+  }
+
+  .sup-batch-list-head.sup-batch-list-head--no-agent,
+  .sup-batch-row.sup-batch-row--no-agent {
+    --batch-cols: minmax(200px, 1.25fr) minmax(60px, 0.5fr) minmax(60px, 0.5fr) minmax(88px, 0.65fr) minmax(100px, 0.8fr);
+  }
+
+  .batch-stat strong { font-size: 16px; }
+  .batch-amount strong { font-size: 15px; }
 }
 
 @media (max-width: 1000px) {
   .stats-row { grid-template-columns: repeat(2, 1fr); }
 
+  .batch-list-head { display: none; }
+
+  .sup-batch-list-head { display: none; }
+
   .batch-row {
     grid-template-columns: 1fr 1fr 1fr;
-    gap: 14px 10px;
+    gap: 12px 10px;
+    padding: 16px 18px;
   }
 
   .batch-info { grid-column: 1 / -1; }
 
-  .batch-amount { text-align: left; }
+  .batch-stat,
+  .batch-amount {
+    padding: 8px 6px;
+  }
+
+  .batch-amount { text-align: center; }
 
   .batch-action {
     grid-column: 1 / -1;
-    justify-content: flex-start;
+    justify-content: space-between;
+    padding-top: 4px;
+    border-top: 1px dashed #eef2f7;
+    margin-top: 4px;
+  }
+
+  /* 补单记录：窄屏用卡片内统计，避免与右侧数字挤在一行 */
+  .sup-batch-row {
+    grid-template-columns: 1fr;
+    gap: 0;
+    padding: 14px 16px;
+  }
+
+  .sup-batch-row .batch-stat,
+  .sup-batch-row .batch-amount {
+    display: none;
+  }
+
+  .sup-batch-row .mobile-stat-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px 6px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--rp-border);
+  }
+
+  .sup-batch-row .mobile-stat-grid .msg-label {
+    font-size: 10px;
+  }
+
+  .sup-batch-row .mobile-stat-grid .msg-val {
+    font-size: 14px;
+    font-weight: 700;
+  }
+
+  .sup-batch-row .mobile-stat-grid.sup-grid .msg-cell.amount {
+    display: flex;
+    grid-column: 1 / -1;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    background: #fff6f6;
+    border: 1px solid #ffe4e4;
+  }
+
+  .sup-batch-row .mobile-stat-grid.sup-grid .msg-cell.amount .msg-label {
+    font-size: 11px;
+    margin-bottom: 0;
+  }
+
+  .sup-batch-row .mobile-stat-grid.sup-grid .msg-cell.amount .msg-val {
+    font-size: 14px;
+  }
+
+  .sup-batch-row .batch-action {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    grid-column: auto;
+    border-top: none;
+    margin-top: 0;
+    padding-top: 0;
+  }
+
+  .sup-batch-row .batch-action .arrow-icon {
+    display: none;
   }
 }
 
@@ -3084,44 +3998,193 @@ onUnmounted(() => {
   .stat-icon { width: 32px; height: 32px; }
   .stat-icon svg { width: 15px; height: 15px; }
   .stat-label { font-size: 12px; }
-  .stat-value { margin-left: 40px; font-size: 20px; }
+  .stat-value { font-size: 20px; }
 
   .filter-bar {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
     gap: 10px;
     padding: 14px 16px;
     border-top: none;
   }
 
-  .filter-bar::before { display: none; }
+  .page-hero { margin-bottom: 14px; }
+  .hero-content { padding: 18px 16px; }
+  .hero-title { font-size: 19px; }
 
-  .filter-left {
-    flex-direction: column;
-    align-items: stretch;
+  .filter-toolbar {
     width: 100%;
-    gap: 10px;
+    gap: 12px;
   }
+
+  .module-select { width: 100%; }
 
   .module-trigger { width: 100%; justify-content: flex-start; }
 
   .module-dropdown { min-width: 100%; }
 
-  .filter-inputs {
-    display: grid !important;
-    grid-template-columns: 1fr 1fr;
+  .filter-form {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .filter-fields {
+    display: grid;
+    grid-template-columns: 1fr;
+    min-width: 0;
+    gap: 8px;
+  }
+
+  .filter-input,
+  .filter-fields .filter-select {
+    width: 100% !important;
+    min-width: 0;
+    max-width: none;
+    height: 34px;
+    font-size: 12px !important;
+    font-weight: 400;
+    line-height: 1.25;
+    border-radius: 8px;
+    border-width: 1px;
+  }
+
+  .filter-input {
+    padding: 0 11px;
+  }
+
+  .filter-input::placeholder {
+    font-size: 12px;
+    font-weight: 400;
+  }
+
+  .filter-fields .filter-select {
+    padding: 0 28px 0 11px;
+    background-position: right 10px center;
+    background-size: 9px 5px;
+  }
+
+  .filter-fields .filter-select option {
+    font-size: 12px;
+    font-weight: 400;
+  }
+
+  .filter-fields :deep(.filter-date.el-date-editor) {
+    width: 100% !important;
+    min-width: 0;
+    max-width: none;
+    height: 34px !important;
+    --el-date-editor-width: 100%;
+  }
+
+  .filter-fields :deep(.filter-date .el-input__wrapper) {
+    min-height: 32px;
+    padding: 0 8px 0 10px;
+    border-radius: 8px;
+    border-width: 1px;
+  }
+
+  .filter-fields :deep(.filter-date .el-input__inner) {
+    height: 32px;
+    line-height: 32px;
+    font-size: 12px !important;
+  }
+
+  .filter-fields :deep(.filter-date .el-input__inner::placeholder) {
+    font-size: 12px;
+  }
+
+  .filter-fields :deep(.filter-date .el-input__prefix-inner) {
+    font-size: 13px;
+  }
+
+  .filter-field-agent { grid-column: auto; }
+
+  .filter-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
     width: 100%;
     gap: 8px;
   }
-  .filter-inputs input { width: 100%; min-width: 0; }
-  .filter-inputs .btn-search { grid-column: 1; }
-  .filter-inputs .btn-reset { grid-column: 2; }
-  .filter-inputs .filter-select { grid-column: 1 / -1; }
 
-  .batch-list { padding: 12px 16px 16px; }
+  .filter-total {
+    padding: 5px 12px;
+    font-size: 12px;
+  }
 
-  .mobile-tabs { display: flex; }
-  .module-select { display: none; }
+  .filter-btns {
+    flex: 0 0 auto;
+  }
+
+  .filter-btns .btn-search,
+  .filter-btns .btn-reset {
+    width: auto;
+    min-width: 72px;
+    height: 34px;
+    padding-left: 14px;
+    padding-right: 14px;
+    font-size: 12px;
+    border-radius: 8px;
+  }
+
+  .batch-list { padding: 12px 14px 16px; }
+
+  .batch-list-head { display: none; }
+
+  .mobile-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 10px 12px 0;
+    background: #f6f8fc;
+    border-bottom: none;
+  }
+
+  .mobile-tab {
+    flex: 1;
+    padding: 10px 0;
+    font-size: 13px;
+    border-radius: 10px 10px 0 0;
+    border-bottom: none;
+    background: transparent;
+  }
+
+  .mobile-tab.active {
+    background: #fff;
+    color: var(--rp-primary);
+    box-shadow: 0 -2px 8px rgba(21, 32, 51, 0.04);
+  }
+
+  .filter-bar {
+    padding: 12px 14px 14px;
+    border-bottom: 1px solid #f0f2f7;
+  }
+
+  .filter-toolbar .module-select { display: none; }
+
+  .filter-toolbar--sup {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .filter-toolbar--sup .filter-sup-head-total {
+    display: none;
+  }
+
+  .filter-form--sup {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .filter-sup-mobile-total {
+    display: inline-flex;
+  }
+
+  .filter-actions--btns-only {
+    justify-content: space-between;
+    width: 100%;
+  }
 
   .batch-row {
     grid-template-columns: 1fr;
@@ -3129,7 +4192,7 @@ onUnmounted(() => {
     padding: 14px 16px;
   }
 
-  .batch-info { grid-column: 0; margin-bottom: 0; }
+  .batch-info { grid-column: 1 / -1; width: 100%; min-width: 0; margin-bottom: 0; }
 
   .batch-stat,
   .batch-amount { display: none; }
@@ -3137,10 +4200,26 @@ onUnmounted(() => {
   .mobile-stat-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 4px 0;
+    gap: 8px 6px;
     margin-top: 10px;
     padding-top: 10px;
-    border-top: 1px solid #f0f2f5;
+    border-top: 1px solid var(--rp-border);
+  }
+
+  .mobile-stat-grid .msg-cell {
+    padding: 8px 6px;
+    border-radius: 8px;
+    background: #f8fafc;
+  }
+
+  .mobile-stat-grid .msg-label {
+    font-size: 10px;
+    color: var(--rp-text-3);
+  }
+
+  .mobile-stat-grid .msg-val {
+    font-size: 16px;
+    font-weight: 700;
   }
 
   .mobile-stat-grid:not(.sup-grid) {
@@ -3148,21 +4227,82 @@ onUnmounted(() => {
   }
 
   .mobile-stat-grid:not(.sup-grid) .msg-cell.amount {
-    display: none;
+    display: flex;
+    grid-column: 1 / -1;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 12px;
+    background: #f5f8ff;
+    border: 1px solid #e4ecff;
+  }
+
+  .mobile-stat-grid:not(.sup-grid) .msg-cell.amount .msg-label {
+    font-size: 11px;
+    color: var(--rp-text-2);
+  }
+
+  .mobile-stat-grid:not(.sup-grid) .msg-cell.amount .msg-val {
+    font-size: 15px;
+  }
+
+  .mobile-stat-grid.sup-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .mobile-stat-grid.sup-grid .msg-cell.amount {
+    display: flex;
+    grid-column: 1 / -1;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 12px;
+    background: #fff6f6;
+    border: 1px solid #ffe4e4;
+  }
+
+  .mobile-stat-grid.sup-grid .msg-cell.amount .msg-label {
+    font-size: 11px;
+    color: var(--rp-text-2);
+    margin-bottom: 0;
+  }
+
+  .mobile-stat-grid.sup-grid .msg-cell.amount .msg-val {
+    font-size: 14px;
+    font-weight: 700;
+  }
+
+  .sup-batch-row .batch-no.sup-link {
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .sup-batch-row .batch-time {
+    font-size: 11px;
   }
 
   .action-amount {
-    display: block;
-    text-align: right;
-    margin-top: 2px;
+    display: none;
   }
-  .action-amount .msg-label { font-size: 10px; color: #9aa5b5; }
-  .action-amount .msg-val { font-size: 14px; font-weight: 700; }
 
-  .batch-head { padding-right: 80px; flex-wrap: wrap; }
+  .batch-head {
+    width: 100%;
+    box-sizing: border-box;
+    padding-right: 36px;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
 
-  .mobile-stat-grid.sup-grid {
-    grid-template-columns: repeat(4, 1fr);
+  .batch-meta-row {
+    padding-right: 0;
+    gap: 5px;
+  }
+
+  .batch-time {
+    font-size: 11px;
+    line-height: 1.45;
   }
 
   .batch-action {
@@ -3181,121 +4321,144 @@ onUnmounted(() => {
     width: 26px; height: 26px; border-radius: 6px;
   }
 
-  .batch-action .status-pill {
-    font-size: 12px; padding: 3px 10px;
+  .batch-head .batch-no {
+    font-size: 12px;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  /* 批次号独占一行，三个标签落到下一行横向排列（不被长批次号挤成竖排） */
-  .batch-head .batch-no { font-size: 12.5px; flex-basis: 100%; }
+  .batch-chip {
+    font-size: 10px;
+    padding: 2px 7px;
+  }
 
   .pagination-wrap { padding: 8px 16px 16px; }
 
-  /* 抽屉 → 底部弹窗 */
+  /* 抽屉 → 底部 sheet */
   .drawer-mask {
     align-items: flex-end;
     justify-content: stretch;
+    background: rgba(15, 23, 42, 0.52);
+    backdrop-filter: blur(6px);
   }
 
   .order-drawer {
     width: 100%;
-    height: auto;
-    max-height: 88vh;
-    border-radius: 18px 18px 0 0;
-    box-shadow: 0 -8px 40px rgba(15, 23, 42, 0.15);
+    height: min(92dvh, 92vh);
+    max-height: 92dvh;
+    border-radius: 20px 20px 0 0;
+    box-shadow: 0 -12px 48px rgba(15, 23, 42, 0.18);
+    padding-bottom: env(safe-area-inset-bottom, 0);
   }
 
   .drawer-drag-bar {
     display: flex;
     justify-content: center;
-    padding: 10px 0 4px;
+    padding: 10px 0 2px;
     flex-shrink: 0;
   }
 
   .drawer-drag-bar span {
-    width: 36px;
+    width: 40px;
     height: 4px;
-    border-radius: 4px;
-    background: #d0d7e2;
+    border-radius: 999px;
+    background: #d8dee9;
   }
 
   .drawer-header {
-    padding: 14px 18px 14px;
+    padding: 10px 16px 14px;
   }
 
-  .drawer-title-row { margin-bottom: 12px; }
-  .drawer-title-row h3 { font-size: 16px; }
+  .drawer-title-row { margin-bottom: 10px; }
+  .drawer-title-row h3 { font-size: 17px; }
 
-  .dbi-summary { gap: 6px; }
-  .dbi-chip { padding: 6px 10px; }
-  .dbi-chip strong { font-size: 14px; }
+  .drawer-close {
+    width: 36px;
+    height: 36px;
+    border-radius: 12px;
+  }
 
-  .drawer-body { padding: 12px 18px 18px; }
+  .drawer-stats {
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
 
-  .order-card { padding: 14px; }
+  .drawer-stat {
+    padding: 10px 11px;
+    border-radius: 11px;
+  }
+
+  .drawer-stat--wide {
+    grid-column: 1 / -1;
+  }
+
+  .drawer-stat-amount {
+    font-size: 20px;
+  }
+
+  .dbi-progress-wrap {
+    padding: 10px 12px;
+  }
+
+  .drawer-actions-bar {
+    padding: 0 16px 12px;
+  }
+
+  .verify-batch-btn {
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
+    border-radius: 12px;
+  }
+
+  .drawer-body {
+    padding: 12px 14px calc(18px + env(safe-area-inset-bottom, 0));
+  }
+
+  .order-card {
+    gap: 10px;
+    padding: 14px;
+    margin-bottom: 12px;
+  }
+
+  .oc-avatar-wrap {
+    width: 52px;
+    height: 52px;
+  }
+
+  .oc-title {
+    font-size: 15px;
+  }
 
   .oc-details {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .oc-detail:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .oc-detail strong {
+    font-size: 15px;
   }
 
   .oc-verify-row {
     grid-template-columns: repeat(2, 1fr);
   }
 
-  /* 补单批次行 - 移动端 */
-  .sup-batch-row {
-    grid-template-columns: 1fr;
-    gap: 0;
-    padding: 14px 16px;
+  .refund-btn {
+    min-height: 34px;
+    padding: 0 14px;
+    font-size: 12px;
   }
 
-  .sup-batch-row .batch-info {
-    grid-column: 1;
-    margin-bottom: 10px;
-  }
-
-  .sup-batch-row .batch-head {
-    margin-bottom: 4px;
-  }
-
-  .sup-batch-row .batch-head .batch-no {
-    font-size: 12.5px;
-  }
-
-  .sup-batch-row .batch-stat {
-    display: none;
-  }
-
-  .sup-batch-row .batch-action {
-    position: absolute;
-    bottom: 30px; 
-    right: 14px;
-    top: auto;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 6px;
-  }
-
-
-  .batch-action .flex_tab {
-    display: flex;
-    margin-bottom: 10px;
-  }
-
-  .sup-batch-row .batch-action .arrow-icon { display: none; }
-
-  .sup-batch-row .mobile-stat-grid {
-    display: grid;
-    padding-right: 90px;
-  }
-
-  .sup-hint { margin-left: 0; margin-top: 10px; display: block; }
-
-  .sup-batch-row .batch-time {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 2px;
+  .sup-batch-row .btn-approve-all {
+    height: 28px;
+    padding: 0 10px;
+    font-size: 11px;
   }
 
   /* 补单抽屉 - 移动端 */
@@ -3308,33 +4471,12 @@ onUnmounted(() => {
   .sd-chip { padding: 4px 8px; font-size: 11px; }
   .sd-chip strong { font-size: 13px; }
 
-  .sup-card { padding: 12px; margin-bottom: 10px; }
-
-  .sup-card-head { margin-bottom: 10px; gap: 6px; flex-wrap: wrap; }
-
-  .sup-card-idx { width: 22px; height: 22px; font-size: 10px; }
-
-  .sup-card-order { font-size: 11.5px; }
-
-  .sup-card-body {
-    grid-template-columns: 1fr 1fr;
-    gap: 6px;
-    padding: 8px 0;
-  }
-
-  .sup-card-field:last-child {
-    grid-column: 1 / -1;
-  }
-
-  .sup-card-label { font-size: 10px; }
-  .sup-card-val { font-size: 13px; }
-
-  .sup-card-actions { margin-top: 10px; gap: 6px; }
   .sup-card-actions .btn-approve,
   .sup-card-actions .btn-reject {
-    height: 30px;
-    padding: 0 12px;
-    font-size: 12px;
+    flex: 1;
+    justify-content: center;
+    min-width: 0;
+    height: 34px;
   }
 
   /* 底部弹窗动画：上下滑动 */

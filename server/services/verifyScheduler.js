@@ -26,12 +26,14 @@ async function findPendingOrders() {
 }
 
 function calcShortage(order, verifiedCount) {
-  const baseLine = order.target_type === 'like'
-    ? (order.like_count ?? 0)
-    : (order.snapshot_current_read_count ?? 0)
-  const gain = Math.max(0, verifiedCount - baseLine)
+  const rawBase = order.target_type === 'like'
+    ? order.like_count
+    : order.snapshot_current_read_count
+  const snapshotMissing = rawBase == null
+  const baseLine = snapshotMissing ? verifiedCount : Number(rawBase) || 0
+  const gain = snapshotMissing ? 0 : Math.max(0, verifiedCount - baseLine)
   const shortage = Math.max(0, order.ordered_quantity - gain)
-  return { baseLine, gain, shortage }
+  return { baseLine, gain, shortage, snapshotMissing }
 }
 
 async function fetchVerifiedCount(order) {
@@ -124,7 +126,17 @@ async function verifyOne(order) {
 
   await saveSnapshot(order, count, payload)
 
-  const { baseLine, gain, shortage } = calcShortage(order, count)
+  const { baseLine, gain, shortage, snapshotMissing } = calcShortage(order, count)
+
+  // 初始快照缺失时补录基线
+  if (snapshotMissing) {
+    const backfill = order.target_type === 'like'
+      ? { like_count: count }
+      : { snapshot_current_read_count: count }
+    await db('orders').where({ id: order.id }).update({ ...backfill, updated_at: new Date() })
+    console.log(`[verify-scheduler] ${order.order_no} 初始快照缺失，已补录基线=${count}`)
+  }
+
   const completedQty = Math.min(gain, order.ordered_quantity)
   await db('orders').where({ id: order.id }).update({
     completed_quantity: completedQty,

@@ -16,13 +16,18 @@ router.use(authRequired)
 router.get('/batches', async (req, res) => {
   try {
     const userIds = await User.getVisibleUserIds(req.user)
-    const { page = 1, pageSize = 20, status, batch_no } = req.query
+    const { page = 1, pageSize = 20, status, batch_no, agent_id, start_date, end_date } = req.query
+    const roles = req.user.roles || []
+    const isAdmin = roles.includes('admin') || roles.includes('super')
     const result = await Task.listBatches({
       userIds,
       page: Number(page),
       pageSize: Number(pageSize),
       status,
-      batch_no
+      batch_no,
+      agent_id: isAdmin && agent_id ? Number(agent_id) : undefined,
+      start_date: isAdmin ? start_date : undefined,
+      end_date: isAdmin ? end_date : undefined
     })
     res.json({ code: 0, data: result })
   } catch (err) {
@@ -258,7 +263,11 @@ router.get('/supplements/batch/:batchId', async (req, res) => {
     const rows = await q.select(
       'r.*',
       'users.username', 'users.nickname',
-      'products.name as product_name'
+      'products.name as product_name',
+      'orders.title as order_title',
+      'orders.author_name',
+      'orders.avatar_url',
+      'orders.note_url as order_note_url'
     ).orderBy('r.created_at', 'asc')
 
     res.json({ code: 0, data: rows })
@@ -273,7 +282,14 @@ router.get('/supplements/batch/:batchId', async (req, res) => {
 router.get('/stats', async (req, res) => {
   try {
     const userIds = await User.getVisibleUserIds(req.user)
-    const stats = await Task.getStats(userIds)
+    const { agent_id, start_date, end_date } = req.query
+    const roles = req.user.roles || []
+    const isAdmin = roles.includes('admin') || roles.includes('super')
+    const stats = await Task.getStats(userIds, {
+      agent_id: isAdmin && agent_id ? Number(agent_id) : undefined,
+      start_date: isAdmin ? start_date : undefined,
+      end_date: isAdmin ? end_date : undefined
+    })
     res.json({ code: 0, data: stats })
   } catch (err) {
     res.status(500).json({ code: 500, message: err.message })
@@ -313,7 +329,7 @@ router.get('/dashboard', async (req, res) => {
       isAdmin ? db('order_replenishment_records as r').leftJoin('users', 'r.user_id', 'users.id').whereIn('r.status', ['pending', 'created']).select('r.*', 'users.username').orderBy('r.created_at', 'desc').limit(5) : Promise.resolve([]),
       db('account_records').where({ user_id: myId }).whereIn('record_type', ['admin_add', 'admin_deduct']).orderBy('created_at', 'desc').limit(3),
       Task.listOrders({ userIds, page: 1, pageSize: 5 }),
-      Task.listAccountRecords({ userIds, page: 1, pageSize: 5 }),
+      Task.listAccountRecords({ userIds: [myId], page: 1, pageSize: 10 }),
       Task.listBatches({ userIds, page: 1, pageSize: 5 }),
       Task.getDailyStats(userIds, 7),
       db('account_records').where({ user_id: myId, record_type: 'agent_commission' }).orderBy('created_at', 'desc').limit(5)

@@ -89,6 +89,43 @@ router.post('/register', validate({ body: ['username', 'password'] }), async (re
       return res.status(409).json({ code: 409, message: '用户名已存在' })
     }
     const user = await User.create({ username, password, real_name, nickname, refCode })
+
+    // 注册奖励：如果该用户有上级代理且代理配置了注册奖励，自动发放
+    if (user.referred_by) {
+      try {
+        const hasTable = await db.schema.hasTable('agent_register_bonus')
+        if (hasTable) {
+          const bonusCfg = await db('agent_register_bonus').where({ agent_id: user.referred_by }).first()
+          if (bonusCfg && parseFloat(bonusCfg.bonus_amount) > 0) {
+            const bonusAmount = parseFloat(bonusCfg.bonus_amount)
+            const now = new Date()
+            const bal = await db('balance_accounts').where({ user_id: user.id }).first()
+            const oldBal = bal ? parseFloat(bal.available_amount) : 0
+            const newBal = Math.round((oldBal + bonusAmount) * 10000) / 10000
+            if (bal) {
+              await db('balance_accounts').where({ user_id: user.id }).update({ available_amount: newBal, updated_at: now })
+            } else {
+              await db('balance_accounts').insert({ user_id: user.id, available_amount: newBal, created_at: now, updated_at: now })
+            }
+            const { randomUUID } = await import('crypto')
+            await db('account_records').insert({
+              record_no: `BONUS_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
+              user_id: user.id,
+              record_type: 'register_bonus',
+              direction: 'in',
+              actual_paid_amount: bonusAmount,
+              before_available_amount: oldBal,
+              after_available_amount: newBal,
+              remark: '新用户注册奖励',
+              created_at: now
+            })
+          }
+        }
+      } catch (e) {
+        console.warn('[auth/register] 注册奖励发放失败:', e.message)
+      }
+    }
+
     const token = generateToken(user)
     res.json({
       code: 0,

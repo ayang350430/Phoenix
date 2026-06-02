@@ -263,13 +263,12 @@ export async function fetchSnapshot(noteUrl, targetType = 'read', dataSource = '
 export async function collectSnapshots(lines, targetType = 'read', dataSource = 'realtime') {
   const results = new Map()
   const batch = concurrency
-
   for (let i = 0; i < lines.length; i += batch) {
     const chunk = lines.slice(i, i + batch)
     const tasks = chunk.map((line, j) =>
       fetchSnapshot(line.url, targetType, dataSource).then(snap => {
         results.set(i + j, snap)
-      })
+      }).catch(() => {})
     )
     await Promise.all(tasks)
   }

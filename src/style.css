@@ -1,3 +1,22 @@
+:root {
+  /* 系统主色 */
+  --goosd-primary: #2f6df6;
+  --goosd-primary-light: #5a8ef8;
+  --goosd-primary-dark: #2558d4;
+  --goosd-primary-soft: #eef3ff;
+  --goosd-primary-muted: rgba(47, 109, 246, 0.12);
+  --goosd-primary-rgb: 47, 109, 246;
+
+  /* 组件内常用别名 */
+  --rp-primary: var(--goosd-primary);
+  --bw-primary: var(--goosd-primary);
+  --ws-primary: var(--goosd-primary);
+  --dash-primary: var(--goosd-primary);
+
+  /* 辅助色（余额、强调，非主色） */
+  --goosd-accent: #ee4d7a;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -34,8 +53,10 @@ button {
   min-height: 100vh;
 }
 
+/* 防止 iOS 聚焦时放大页面；筛选栏等组件自行控制字号 */
 @media (max-width: 760px) {
-  input, textarea, select {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="button"]):not([type="submit"]):not(.filter-input),
+  textarea {
     font-size: 16px !important;
   }
 }

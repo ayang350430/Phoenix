@@ -8,13 +8,15 @@ import { collectSnapshots, fetchSnapshot, fetchNoteId, fetchNoteBasic } from '..
 import { cancelTask } from '../services/xhsApi.js'
 import { filterLookupOrders } from '../services/orderLookupPolicy.js'
 import { creditAgentCommission, clawbackAgentCommission } from '../services/agentCommission.js'
+import { refreshBatchStatus } from '../services/batchStatus.js'
 import db from '../db.js'
 
 const router = Router()
 
-const SNAPSHOT_RETRY_DELAY = 2 * 60_000
+const SNAPSHOT_RETRY_MAX = 5
+const SNAPSHOT_RETRY_DELAYS = [2 * 60_000, 3 * 60_000, 5 * 60_000, 8 * 60_000, 15 * 60_000]
 
-async function retryMissingSnapshots(batchDbId, targetType, dataSource = 'realtime') {
+async function retryMissingSnapshots(batchDbId, targetType, dataSource = 'realtime', attempt = 1) {
   try {
     const query = db('orders').where({ batch_id: batchDbId })
 
@@ -28,7 +30,7 @@ async function retryMissingSnapshots(batchDbId, targetType, dataSource = 'realti
 
     if (!orders.length) return
 
-    console.log(`[snapshot-retry] 批次 ${batchDbId}: ${orders.length} 条缺少快照，重试中`)
+    console.log(`[snapshot-retry] 批次 ${batchDbId}: ${orders.length} 条缺少快照，第 ${attempt}/${SNAPSHOT_RETRY_MAX} 次重试`)
 
     for (const order of orders) {
       try {
@@ -54,6 +56,24 @@ async function retryMissingSnapshots(batchDbId, targetType, dataSource = 'realti
       } catch (err) {
         console.warn(`[snapshot-retry] ${order.order_no} 仍失败: ${err.message}`)
       }
+    }
+
+    // 检查是否还有缺失，安排下一次重试
+    const remainQuery = db('orders').where({ batch_id: batchDbId })
+    if (targetType === 'like') {
+      remainQuery.whereNull('like_count')
+    } else {
+      remainQuery.whereNull('snapshot_current_read_count')
+    }
+    const remaining = await remainQuery.count('id as cnt').first()
+    const remainCount = Number(remaining?.cnt) || 0
+
+    if (remainCount > 0 && attempt < SNAPSHOT_RETRY_MAX) {
+      const nextDelay = SNAPSHOT_RETRY_DELAYS[attempt] || SNAPSHOT_RETRY_DELAYS[SNAPSHOT_RETRY_DELAYS.length - 1]
+      console.log(`[snapshot-retry] 批次 ${batchDbId}: 仍有 ${remainCount} 条缺失，${Math.round(nextDelay / 1000)}s 后第 ${attempt + 1} 次重试`)
+      setTimeout(() => retryMissingSnapshots(batchDbId, targetType, dataSource, attempt + 1), nextDelay)
+    } else if (remainCount > 0) {
+      console.warn(`[snapshot-retry] 批次 ${batchDbId}: ${remainCount} 条快照在 ${SNAPSHOT_RETRY_MAX} 次重试后仍缺失`)
     }
   } catch (err) {
     console.error('[snapshot-retry] 异常:', err.message)
@@ -429,7 +449,7 @@ router.post('/submit', authRequired, async (req, res) => {
       await trx.commit()
 
       if (type !== 'impression') {
-        setTimeout(() => retryMissingSnapshots(insertId, type, dataSource), SNAPSHOT_RETRY_DELAY)
+        setTimeout(() => retryMissingSnapshots(insertId, type, dataSource), SNAPSHOT_RETRY_DELAYS[0])
       }
 
       res.json({
@@ -546,25 +566,22 @@ router.post('/orders/lookup', authRequired, async (req, res) => {
 
     const selectCols = [
       'orders.id', 'orders.order_no', 'orders.note_url', 'orders.target_type',
+      'orders.title', 'orders.author_name', 'orders.avatar_url',
       'orders.ordered_quantity', 'orders.completed_quantity',
       'orders.order_status', 'orders.external_task_id', 'orders.external_status',
       'orders.external_progress', 'orders.external_completed_quantity',
       'orders.external_last_synced_at', 'orders.user_id',
       'orders.reason_message',
       'orders.created_at', 'orders.updated_at',
+      'order_batches.batch_no',
       'products.name as product_name',
       'products.api_endpoint'
     ]
-    if (hasProductId) selectCols.splice(4, 0, 'orders.product_id')
+    if (hasProductId) selectCols.splice(7, 0, 'orders.product_id')
 
     let q = db('orders')
       .leftJoin('products', joinCondition)
-
-    // 批次号查询需要 join order_batches
-    const needBatchJoin = lookupBatchNos.length > 0 || ambiguousNos.length > 0
-    if (needBatchJoin) {
-      q = q.leftJoin('order_batches', 'order_batches.id', 'orders.batch_id')
-    }
+      .leftJoin('order_batches', 'order_batches.id', 'orders.batch_id')
 
     q = q.select(selectCols)
 
@@ -619,7 +636,11 @@ router.post('/orders/lookup', authRequired, async (req, res) => {
       return {
         id: o.id,
         order_no: o.order_no,
+        batch_no: o.batch_no || null,
         note_url: o.note_url,
+        title: o.title || null,
+        author_name: o.author_name || null,
+        avatar_url: o.avatar_url || null,
         target_type: o.target_type,
         product_name: o.product_name || null,
         ordered_quantity: o.ordered_quantity,
@@ -734,8 +755,8 @@ router.post('/:id/refund', authRequired, async (req, res) => {
           totalRefund += refundAmount
         }
 
-        await trx('order_batches').where({ id: batchId }).update({ status: 'refunded', updated_at: now })
         await trx.commit()
+        await refreshBatchStatus(batchId)
         return res.json({ code: 0, message: `退款成功，共退还 ¥${totalRefund.toFixed(2)}`, refunded: true })
       } catch (err) {
         await trx.rollback()
@@ -822,8 +843,8 @@ router.post('/orders/:id/refund', authRequired, async (req, res) => {
       return res.status(400).json({ code: 400, message: '没有可退款金额' })
     }
 
-    // ===== 未派发到上游的订单：直接退款 =====
-    if (!order.external_task_id) {
+    // ===== 待处理订单：直接退款；其他状态走审批 =====
+    if (order.order_status === 'pending') {
       const trx = await db.transaction()
       try {
         const now = new Date()
@@ -868,14 +889,8 @@ router.post('/orders/:id/refund', authRequired, async (req, res) => {
         // 退款 → 扣回已划给上级代理的分润
         await clawbackAgentCommission(trx, order, refundQty)
 
-        // 检查批次内是否全部退完
-        const remaining = await trx('orders').where({ batch_id: order.batch_id })
-          .whereNotIn('order_status', ['refunded', 'cancelled', 'completed', 'partial_completed']).first()
-        if (!remaining) {
-          await trx('order_batches').where({ id: order.batch_id }).update({ status: 'refunded', updated_at: now })
-        }
-
         await trx.commit()
+        await refreshBatchStatus(order.batch_id)
         return res.json({ code: 0, message: `退款成功，退还 ¥${refundAmount.toFixed(2)}`, refunded: true })
       } catch (err) {
         await trx.rollback()
@@ -1077,46 +1092,64 @@ router.post('/:id/verify', authRequired, async (req, res) => {
 
     for (const order of verifyOrders) {
       try {
-        // 如果有 note_url 但没有 note_id，先解析
+        // 如果有 note_url 但没有 note_id，先解析（每 10 秒重试直到成功）
         let noteId = order.note_id
         if (!noteId && order.note_url) {
-          noteId = await fetchNoteId(order.note_url)
-          if (noteId) {
-            await db('orders').where({ id: order.id }).update({ note_id: noteId, updated_at: new Date() })
+          for (let retry = 0; !noteId; retry++) {
+            if (retry > 0) await new Promise(r => setTimeout(r, 10000))
+            noteId = await fetchNoteId(order.note_url)
+            if (!noteId) console.warn(`[batch/verify] ${order.order_no} note_id 解析失败，第 ${retry + 1} 次重试`)
           }
+          await db('orders').where({ id: order.id }).update({ note_id: noteId, updated_at: new Date() })
         }
         if (!noteId) continue
 
-        // 按数据源拿全量快照：realtime=/realtime，pgy=/pgy
-        const counts = await fetchNoteCounts(noteId, order.data_source || 'realtime')
-        const payload = counts.payload
-
-        // 按类型取对应的指标：viewNum / likedCount / collectCount / commentCount / shareCount
-        const countMap = {
-          read: counts.view_count,
-          view: counts.view_count,
-          like: counts.like_count,
-          collect: counts.collect_count,
-          comment: counts.comment_count,
-          share: counts.share_count
+        // 获取初始快照（如果下单时没拿到，每 10 秒重试直到成功）
+        const isLikeType = order.target_type === 'like'
+        const initialMissing = isLikeType ? order.like_count == null : order.snapshot_current_read_count == null
+        if (initialMissing) {
+          console.log(`[batch/verify] ${order.order_no} 初始快照缺失，开始补录`)
+          for (let retry = 0; ; retry++) {
+            if (retry > 0) await new Promise(r => setTimeout(r, 10000))
+            const snap = await fetchNoteCounts(noteId, order.data_source || 'realtime')
+            const val = isLikeType ? snap.like_count : snap.view_count
+            if (val != null) {
+              const backfill = { updated_at: new Date() }
+              if (isLikeType) {
+                backfill.like_count = val
+                if (snap.payload) backfill.snapshot_current_like_payload = JSON.stringify(snap.payload).slice(0, 8000)
+              } else {
+                backfill.snapshot_current_read_count = val
+                if (snap.payload) backfill.snapshot_current_read_payload = JSON.stringify(snap.payload).slice(0, 8000)
+              }
+              await db('orders').where({ id: order.id }).update(backfill)
+              order = await db('orders').where({ id: order.id }).first()
+              console.log(`[batch/verify] ${order.order_no} 初始快照补录成功: ${val}`)
+              break
+            }
+            console.warn(`[batch/verify] ${order.order_no} 初始快照补录第 ${retry + 1} 次失败，10s 后重试`)
+          }
         }
-        const currentCount = countMap[order.target_type] ?? null
 
-        // 真的取不到 → 标记已验证但无快照，清掉旧验证数据
-        if (currentCount == null) {
-          await db('orders').where({ id: order.id }).update({
-            last_verified_at: new Date(),
-            order_status: 'processing',
-            completed_quantity: 0,
-            snapshot_verified_read_count: null,
-            snapshot_verified_read_payload: null,
-            snapshot_verified_like_count: null,
-            snapshot_verified_like_payload: null,
-            updated_at: new Date()
-          })
-          verified++
-          console.log(`[batch/verify] ${order.order_no} 类型=${order.target_type} 获取不到快照数据`)
-          continue
+        // 获取验证快照（每 10 秒重试直到成功）
+        let currentCount = null
+        let payload = null
+        for (let retry = 0; currentCount == null; retry++) {
+          if (retry > 0) {
+            console.warn(`[batch/verify] ${order.order_no} 验证快照第 ${retry} 次失败，10s 后重试`)
+            await new Promise(r => setTimeout(r, 10000))
+          }
+          const counts = await fetchNoteCounts(noteId, order.data_source || 'realtime')
+          payload = counts.payload
+          const countMap = {
+            read: counts.view_count,
+            view: counts.view_count,
+            like: counts.like_count,
+            collect: counts.collect_count,
+            comment: counts.comment_count,
+            share: counts.share_count
+          }
+          currentCount = countMap[order.target_type] ?? null
         }
 
         const updateData = {
@@ -1135,7 +1168,6 @@ router.post('/:id/verify', authRequired, async (req, res) => {
           initialCount = parseFloat(order.snapshot_current_read_count) || 0
         }
 
-        // 增量 = 当前快照 - 下单时快照，记录为完成数
         const gain = Math.max(0, currentCount - initialCount)
         updateData.completed_quantity = Math.min(gain, order.ordered_quantity)
 
@@ -1158,33 +1190,8 @@ router.post('/:id/verify', authRequired, async (req, res) => {
     }
 
     // ---- 第三步：更新批次状态 ----
-    const allOrders = await db('orders').where({ batch_id: batchId })
-    const totalCount = allOrders.length
-    const allCompleted = allOrders.every(o => ['completed', 'refunded'].includes(o.order_status))
-    const pendingCount = allOrders.filter(o => o.order_status === 'pending').length
-    const processingCount = allOrders.filter(o => ['running', 'processing'].includes(o.order_status)).length
-    const succeededCount = allOrders.filter(o => o.order_status === 'completed').length
-    const failedCount = allOrders.filter(o => o.order_status === 'failed').length
-
-    if (allCompleted && totalCount > 0) {
-      await db('order_batches').where({ id: batchId }).update({
-        status: 'completed',
-        pending_count: pendingCount,
-        processing_count: processingCount,
-        succeeded_count: succeededCount,
-        failed_count: failedCount,
-        updated_at: new Date()
-      })
-    } else {
-      await db('order_batches').where({ id: batchId }).update({
-        status: 'processing',
-        pending_count: pendingCount,
-        processing_count: processingCount,
-        succeeded_count: succeededCount,
-        failed_count: failedCount,
-        updated_at: new Date()
-      })
-    }
+    await refreshBatchStatus(batchId)
+    const updatedBatch = await db('order_batches').where({ id: batchId }).first()
 
     const parts = []
     if (completedCount > 0) parts.push(`${completedCount} 条达标`)
@@ -1193,13 +1200,11 @@ router.post('/:id/verify', authRequired, async (req, res) => {
 
     res.json({
       code: 0,
-      message: allCompleted
-        ? `全部 ${totalCount} 条订单已完成，批次已标记完成`
-        : `${parts.join('，')}，批次处理中`,
+      message: `${parts.join('，')}，批次状态: ${updatedBatch.status}`,
       dispatched: 0,
       verified,
       completed: completedCount,
-      batchStatus: allCompleted ? 'completed' : 'processing'
+      batchStatus: updatedBatch.status
     })
   } catch (err) {
     console.error('[batch/verify]', err.message)

@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { authRequired, roleRequired } from '../middleware/auth.js'
 import { cancelTask } from '../services/xhsApi.js'
 import { clawbackAgentCommission } from '../services/agentCommission.js'
+import { refreshBatchStatus } from '../services/batchStatus.js'
 import db from '../db.js'
 
 const router = Router()
@@ -232,12 +233,6 @@ router.put('/:id/approve', authRequired, roleRequired('admin'), async (req, res)
         totalRefund += await refundSingleOrder(trx, orders[i], batch.user_id, ts, i + 1, fullRefund)
       }
 
-      // 检查批次是否全部订单都已退款/完成
-      const remaining = await trx('orders').where({ batch_id: request.batch_id })
-        .whereNotIn('order_status', ['refunded', 'cancelled', 'completed', 'partial_completed']).first()
-      if (!remaining) {
-        await trx('order_batches').where({ id: request.batch_id }).update({ status: 'refunded', updated_at: now })
-      }
     }
 
     await trx('refund_requests').where({ id: requestId }).update({
@@ -246,6 +241,7 @@ router.put('/:id/approve', authRequired, roleRequired('admin'), async (req, res)
     })
 
     await trx.commit()
+    await refreshBatchStatus(request.batch_id)
     res.json({ code: 0, message: `退款成功，共退还 ¥${totalRefund.toFixed(2)}` })
   } catch (err) {
     await trx.rollback()
@@ -309,17 +305,13 @@ router.put('/approve-all', authRequired, roleRequired('admin'), async (req, res)
           for (let i = 0; i < orders.length; i++) {
             refund += await refundSingleOrder(trx, orders[i], batch.user_id, ts, i + 1)
           }
-          const remaining = await trx('orders').where({ batch_id: request.batch_id })
-            .whereNotIn('order_status', ['refunded', 'cancelled', 'completed', 'partial_completed']).first()
-          if (!remaining) {
-            await trx('order_batches').where({ id: request.batch_id }).update({ status: 'refunded', updated_at: now })
-          }
         }
 
         await trx('refund_requests').where({ id: request.id }).update({
           status: 'approved', refund_amount: refund, reviewed_by: req.user.id, reviewed_at: now
         })
         await trx.commit()
+        await refreshBatchStatus(request.batch_id)
         approved++
         totalRefund += refund
       } catch (err) {
