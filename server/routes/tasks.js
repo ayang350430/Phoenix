@@ -59,14 +59,17 @@ router.get('/batches/:id', async (req, res) => {
 router.get('/orders', async (req, res) => {
   try {
     const userIds = await User.getVisibleUserIds(req.user)
-    const { page = 1, pageSize = 20, batch_id, order_status, target_type } = req.query
+    const { page = 1, pageSize = 20, batch_id, order_status, target_type, order_no, start, end } = req.query
     const result = await Task.listOrders({
       userIds,
       page: Number(page),
       pageSize: Number(pageSize),
       batch_id,
       order_status,
-      target_type
+      target_type,
+      order_no,
+      start,
+      end
     })
     res.json({ code: 0, data: result })
   } catch (err) {
@@ -129,17 +132,29 @@ router.get('/problem-records', async (req, res) => {
 
 // ========== 账务记录 ==========
 
-// GET /api/tasks/account-records — 账务记录
+// GET /api/tasks/account-records — 消费/账务记录（用户看自己；代理看自己；管理员可按 user_id 筛选）
 router.get('/account-records', async (req, res) => {
   try {
-    const userIds = await User.getVisibleUserIds(req.user)
-    const { page = 1, pageSize = 20, record_type, direction } = req.query
+    const roles = req.user.roles || []
+    const isAdmin = roles.includes('admin') || roles.includes('super')
+    let userIds
+    if (isAdmin) {
+      const uid = req.query.user_id ? Number(req.query.user_id) : null
+      userIds = uid > 0 ? [uid] : null
+    } else {
+      userIds = [req.user.id]
+    }
+
+    const { page = 1, pageSize = 20, record_type, direction, start, end, order_no } = req.query
     const result = await Task.listAccountRecords({
       userIds,
       page: Number(page),
       pageSize: Number(pageSize),
       record_type,
-      direction
+      direction,
+      start,
+      end,
+      order_no
     })
     res.json({ code: 0, data: result })
   } catch (err) {

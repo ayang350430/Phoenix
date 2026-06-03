@@ -2,6 +2,7 @@ import db from '../db.js'
 import { createTask, getTaskStatus, buildTaskPayload } from './xhsApi.js'
 import { fetchNoteId, fetchNoteBasic, fetchNoteViewCount, fetchNoteLikeCount } from './noteApi.js'
 import { clawbackAgentCommission } from './agentCommission.js'
+import { calcRefundAmount } from '../utils/refundAmount.js'
 
 /**
  * 订单同步调度器
@@ -39,7 +40,7 @@ async function autoRefundOrder(order, reason) {
     const refundQty = Math.max(0, (order.ordered_quantity || 0) - (order.completed_quantity || 0))
     if (refundQty === 0) { await trx.commit(); return }
 
-    const refundAmount = Math.round(refundQty * unitPrice * 10000) / 10000
+    const refundAmount = calcRefundAmount(chargeRec, refundQty, order.ordered_quantity || 0)
 
     await trx('orders').where({ id: order.id }).update({
       order_status: 'refunded', refunded_quantity: refundQty,

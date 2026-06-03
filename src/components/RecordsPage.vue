@@ -2,6 +2,10 @@
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessageBox, ElMessage, ElPagination, ElDatePicker } from 'element-plus'
+import 'element-plus/es/components/message/style/css'
+import 'element-plus/es/components/message-box/style/css'
+import 'element-plus/es/components/pagination/style/css'
+import 'element-plus/es/components/date-picker/style/css'
 import { getUserOrderStatusDisplay } from '../utils/orderStatusDisplay.js'
 
 // v-click-outside 指令
@@ -21,11 +25,14 @@ const route = useRoute()
 const ws = inject('workspace')
 const { getToken, refreshKey, isAdmin, isAgent, fetchBalance, currentUser } = ws
 const isMyOrdersPage = computed(() => route.path === '/my-orders')
+const isRegularUserOrderView = computed(() => isMyOrdersPage.value && !isAdmin.value && !isAgent.value)
 const pageHeroTitle = computed(() => (isMyOrdersPage.value ? '我的订单' : '下单记录'))
 const pageHeroDesc = computed(() =>
-  isMyOrdersPage.value
-    ? '查看您提交的批次进度、订单明细与退款状态'
-    : '批次汇总、订单状态追踪，管理员可审核补单与导出问题订单'
+  isRegularUserOrderView.value
+    ? '查看您提交的订单进度与退款状态'
+    : isMyOrdersPage.value
+      ? '查看您提交的批次进度、订单明细与退款状态'
+      : '批次汇总、订单状态追踪，管理员可审核补单与导出问题订单'
 )
 const canExportProblemOrders = computed(() => (isAdmin.value || isAgent.value) && !isMyOrdersPage.value)
 const canViewOrderStatus = computed(() => (isAdmin.value || isAgent.value) && !isMyOrdersPage.value)
@@ -80,8 +87,9 @@ async function fetchAgentList() {
   } catch { /* ignore */ }
 }
 
-// ========== 批次列表 ==========
+// ========== 批次 / 订单列表 ==========
 const batches = ref([])
+const orders = ref([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = 5
@@ -173,6 +181,49 @@ async function fetchStats() {
   } catch { /* ignore */ }
 }
 
+function orderListStatusView(order) {
+  return orderStatusView(order)
+}
+
+function orderListProgress(order) {
+  if (typeof order?.progress === 'number') return order.progress
+  return orderProgress(order)
+}
+
+function orderListBorderTone(order) {
+  return orderListStatusView(order).color || '#2f6df6'
+}
+
+function orderListProgressTone(order) {
+  return canViewOrderStatus.value ? orderListStatusView(order).color : 'linear-gradient(90deg, #ec4f8b 0%, #2f6df6 100%)'
+}
+
+async function fetchOrders() {
+  loading.value = true
+  try {
+    const q = new URLSearchParams({ page: page.value, pageSize })
+    if (searchOrderNo.value.trim()) q.set('order_no', searchOrderNo.value.trim())
+    if (searchStartDate.value) q.set('start', searchStartDate.value)
+    if (searchEndDate.value) q.set('end', searchEndDate.value)
+    const res = await fetch(`/api/tasks/orders?${q}`, {
+      headers: { Authorization: `Bearer ${getToken()}` }
+    })
+    const data = await res.json()
+    if (data.code === 0) {
+      orders.value = data.data.rows || []
+      total.value = data.data.total || 0
+      expandedOrderId.value = null
+      userOrderDetailMap.value = {}
+    }
+  } catch { /* ignore */ }
+  finally { loading.value = false }
+}
+
+async function fetchRecords() {
+  if (isRegularUserOrderView.value) await fetchOrders()
+  else await fetchBatches()
+}
+
 async function fetchBatches() {
   loading.value = true
   try {
@@ -191,7 +242,7 @@ async function fetchBatches() {
   finally { loading.value = false }
 }
 
-function doSearch() { page.value = 1; fetchStats(); fetchBatches() }
+function doSearch() { page.value = 1; fetchStats(); fetchRecords() }
 
 function resetSearch() {
   searchBatchNo.value = ''
@@ -201,7 +252,7 @@ function resetSearch() {
   searchEndDate.value = ''
   page.value = 1
   fetchStats()
-  fetchBatches()
+  fetchRecords()
 }
 
 // ========== 批次详情抽屉 ==========
@@ -209,7 +260,10 @@ const showDrawer = ref(false)
 const drawerBatch = ref(null)
 const drawerOrders = ref([])
 const drawerLoading = ref(false)
-const isAnyDrawerOpen = computed(() => showDrawer.value || supDrawerShow.value)
+const isDrawerVisible = computed(() =>
+  (showDrawer.value && !isRegularUserOrderView.value) || supDrawerShow.value
+)
+const isAnyDrawerOpen = computed(() => isDrawerVisible.value)
 const drawerBodyRef = ref(null)
 let scrollLockDepth = 0
 let scrollLockSnapshot = null
@@ -234,6 +288,15 @@ function unlockPageScroll() {
   document.documentElement.style.overflow = htmlOverflow
   document.body.style.overflow = bodyOverflow
   scrollLockSnapshot = null
+}
+
+/** 普通用户展开详情时不锁滚动；进入页面时兜底恢复 */
+function ensurePageScrollable() {
+  if (isDrawerVisible.value) return
+  scrollLockDepth = 0
+  scrollLockSnapshot = null
+  document.documentElement.style.overflow = ''
+  document.body.style.overflow = ''
 }
 
 function scrollToOrderInDrawer(orderNo) {
@@ -264,6 +327,180 @@ async function openBatchDrawer(batch) {
     }
   } catch { /* ignore */ }
   finally { drawerLoading.value = false }
+}
+
+// ========== 普通用户订单展开 ==========
+const expandedOrderId = ref(null)
+const userOrderDetailMap = ref({})
+const userOrderDetailLoading = ref(null)
+
+const UOR_EXPAND_MS = 320
+const UOR_EXPAND_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)'
+
+function uorExpandEl(el) {
+  return el instanceof HTMLElement ? el : null
+}
+
+function uorExpandClear(el) {
+  const node = uorExpandEl(el)
+  if (!node) return
+  node.style.height = ''
+  node.style.overflow = ''
+  node.style.transition = ''
+  node.style.opacity = ''
+}
+
+function onUorBeforeEnter(el) {
+  const node = uorExpandEl(el)
+  if (!node) return
+  uorExpandClear(node)
+  node.style.height = '0'
+  node.style.overflow = 'hidden'
+}
+
+function onUorEnter(el, done) {
+  const node = uorExpandEl(el)
+  if (!node) {
+    done()
+    return
+  }
+  let finished = false
+  const finish = () => {
+    if (finished) return
+    finished = true
+    node.removeEventListener('transitionend', onEnd)
+    uorExpandClear(node)
+    node.style.height = 'auto'
+    done()
+  }
+  const onEnd = (e) => {
+    if (e.target === node && e.propertyName === 'height') finish()
+  }
+  const run = () => {
+    const target = node.scrollHeight
+    node.style.transition = `height ${UOR_EXPAND_MS}ms ${UOR_EXPAND_EASE}`
+    void node.offsetHeight
+    node.style.height = `${target}px`
+    node.addEventListener('transitionend', onEnd)
+    window.setTimeout(finish, UOR_EXPAND_MS + 40)
+  }
+  /* 等 Vue 绘制完再量高度，避免首次展开量到 0 或偏小导致卡顿 */
+  requestAnimationFrame(() => requestAnimationFrame(run))
+}
+
+function onUorBeforeLeave(el) {
+  const node = uorExpandEl(el)
+  if (!node) return
+  uorExpandClear(node)
+  node.style.height = `${node.scrollHeight}px`
+  node.style.overflow = 'hidden'
+}
+
+function onUorLeave(el, done) {
+  const node = uorExpandEl(el)
+  if (!node) {
+    done()
+    return
+  }
+  let finished = false
+  const finish = () => {
+    if (finished) return
+    finished = true
+    node.removeEventListener('transitionend', onEnd)
+    done()
+  }
+  const onEnd = (e) => {
+    if (e.target === node && e.propertyName === 'height') finish()
+  }
+  node.style.transition = `height ${UOR_EXPAND_MS}ms ${UOR_EXPAND_EASE}`
+  void node.offsetHeight
+  node.style.height = '0'
+  node.addEventListener('transitionend', onEnd)
+  window.setTimeout(finish, UOR_EXPAND_MS + 40)
+}
+
+function detailOrder(order) {
+  if (!order?.id) return order
+  return userOrderDetailMap.value[order.id] || order
+}
+
+async function toggleUserOrderDetail(order) {
+  if (!order?.id) return
+  if (expandedOrderId.value === order.id) {
+    expandedOrderId.value = null
+    return
+  }
+  if (userOrderDetailLoading.value === order.id) return
+  pendingOrderIds.value = []
+  if (order.batch_id) checkPendingRefund(order.batch_id)
+  /* 先拉详情再展开，避免动画按「加载中」高度播放后内容突增卡顿 */
+  if (!userOrderDetailMap.value[order.id]) {
+    userOrderDetailLoading.value = order.id
+    try {
+      const res = await fetch(`/api/tasks/orders/${order.id}`, {
+        headers: { Authorization: `Bearer ${getToken()}` }
+      })
+      const data = await res.json()
+      if (data.code === 0 && data.data) {
+        userOrderDetailMap.value = { ...userOrderDetailMap.value, [order.id]: data.data }
+      }
+    } catch { /* ignore */ }
+    finally {
+      userOrderDetailLoading.value = null
+    }
+  }
+  expandedOrderId.value = order.id
+  await nextTick()
+  if (expandedOrderId.value === order.id) {
+    window.setTimeout(() => {
+      if (expandedOrderId.value !== order.id) return
+      const row = document.querySelector(`[data-order-id="${order.id}"]`)
+      row?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    }, UOR_EXPAND_MS + 24)
+  }
+}
+
+async function openOrderDrawer(order) {
+  if (isRegularUserOrderView.value) {
+    await toggleUserOrderDetail(order)
+    return
+  }
+  if (!order?.id) return
+  drawerBatch.value = {
+    id: order.batch_id,
+    batch_no: order.batch_no,
+    user_id: order.user_id,
+    created_at: order.created_at,
+    total_count: order.ordered_quantity,
+    succeeded_count: order.completed_quantity || 0,
+    estimated_amount: order.actual_paid_amount,
+    target_type: order.target_type,
+    product_name: order.product_name,
+    data_source: order.data_source,
+    status: order.order_status
+  }
+  showDrawer.value = true
+  drawerLoading.value = true
+  drawerOrders.value = []
+  hasPendingRefund.value = false
+  pendingOrderIds.value = []
+  avatarLoadFailed.value = {}
+  if (order.batch_id) checkPendingRefund(order.batch_id)
+  try {
+    const res = await fetch(`/api/tasks/orders/${order.id}`, {
+      headers: { Authorization: `Bearer ${getToken()}` }
+    })
+    const data = await res.json()
+    if (data.code === 0 && data.data) {
+      drawerOrders.value = [data.data]
+    } else {
+      drawerOrders.value = [order]
+    }
+  } catch {
+    drawerOrders.value = [order]
+  } finally {
+    drawerLoading.value = false
+  }
 }
 
 function closeDrawer() { showDrawer.value = false }
@@ -489,12 +726,12 @@ async function doRefund() {
       if (data.refunded) {
         showToast(data.message || '退款成功')
         closeDrawer()
-        fetchBatches()
+        fetchRecords()
         fetchBalance()
       } else {
         hasPendingRefund.value = true
         showToast(data.message || '退款申请已提交')
-        fetchBatches()
+        fetchRecords()
       }
     } else {
       showToast(data.message || '申请失败')
@@ -523,8 +760,17 @@ async function doOrderRefund(order) {
     if (data.code === 0) {
       if (data.refunded) {
         showToast(data.message || '退款成功')
-        if (drawerBatch.value) openBatchDrawer(drawerBatch.value)
-        fetchBatches()
+        await fetchRecords()
+        if (isRegularUserOrderView.value) {
+          await fetchRecords()
+          const updated = orders.value.find(o => o.id === order.id)
+          if (updated) {
+            userOrderDetailMap.value = { ...userOrderDetailMap.value, [order.id]: updated }
+            expandedOrderId.value = order.id
+          }
+        } else if (drawerBatch.value) {
+          openBatchDrawer(drawerBatch.value)
+        }
         fetchBalance()
       } else {
         pendingOrderIds.value.push(order.id)
@@ -939,24 +1185,29 @@ async function approveAllBatch(batch) {
 
 // ========== 刷新 ==========
 watch(refreshKey, () => {
-  page.value = 1; fetchStats(); fetchBatches()
+  page.value = 1; fetchStats(); fetchRecords()
   if (activeModule.value === 'supplements') { supPage.value = 1; fetchSupplements() }
 })
 
-watch(isAnyDrawerOpen, (open) => {
+watch(isDrawerVisible, (open) => {
   if (open) lockPageScroll()
-  else unlockPageScroll()
+  else {
+    unlockPageScroll()
+    ensurePageScrollable()
+  }
 })
 
 onMounted(() => {
+  ensurePageScrollable()
   fetchStats()
-  fetchBatches()
+  fetchRecords()
   fetchAgentList()
 })
 
 onUnmounted(() => {
   scrollLockDepth = 0
-  unlockPageScroll()
+  scrollLockSnapshot = null
+  ensurePageScrollable()
   if (copiedNoteUrlTimer) clearTimeout(copiedNoteUrlTimer)
 })
 </script>
@@ -974,7 +1225,7 @@ onUnmounted(() => {
 
     <!-- 顶部统计 -->
     <div class="stats-row">
-      <div class="stat-card card-batch">
+      <div v-if="!isRegularUserOrderView" class="stat-card card-batch">
         <div class="stat-top">
           <div class="stat-icon icon-batch">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
@@ -1145,7 +1396,168 @@ onUnmounted(() => {
 
       <!-- ===== 下单记录模块 ===== -->
       <template v-if="activeModule === 'orders'">
-        <div class="batch-list">
+        <!-- 普通用户：订单列表（卡片摘要 + 点击展开详情） -->
+        <div v-if="isRegularUserOrderView" class="user-order-list">
+          <div v-if="loading" class="empty-state">
+            <div class="empty-spinner"></div>
+            <span>加载中...</span>
+          </div>
+          <template v-else-if="orders.length">
+            <div
+              v-for="order in orders"
+              :key="order.id"
+              class="user-order-row"
+              :class="{
+                'is-expanded': expandedOrderId === order.id,
+                'is-detail-loading': userOrderDetailLoading === order.id
+              }"
+              :data-order-id="order.id"
+            >
+              <div
+                class="uor-clickable"
+                role="button"
+                tabindex="0"
+                @click="toggleUserOrderDetail(order)"
+                @keyup.enter="toggleUserOrderDetail(order)"
+              >
+                <div class="uor-head">
+                  <div class="uor-avatar-wrap">
+                    <img
+                      v-if="orderAvatarUrl(order) && !showOrderAvatarFallback(order)"
+                      class="uor-avatar"
+                      :src="orderAvatarUrl(order)"
+                      :alt="orderAuthorName(order) || '笔记头像'"
+                      loading="lazy"
+                      @error="onOrderAvatarError(order.id)"
+                    />
+                    <span v-else class="uor-avatar-fallback">{{ orderAvatarInitial(order) }}</span>
+                  </div>
+                  <div class="uor-body">
+                    <div class="uor-title-row">
+                      <p class="uor-title">{{ orderNoteTitle(order) || order.order_no }}</p>
+                      <svg
+                        class="uor-chevron"
+                        :class="{ 'uor-chevron--open': expandedOrderId === order.id }"
+                        width="16"
+                        height="16"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        aria-hidden="true"
+                      ><polyline points="9 18 15 12 9 6"/></svg>
+                    </div>
+                    <div class="uor-meta">
+                      <span class="uor-time">{{ fmtTime(order.created_at) }}</span>
+                      <span
+                        class="uor-status"
+                        :style="{
+                          color: orderListStatusView(order).color,
+                          background: orderListStatusView(order).bg,
+                          borderColor: (orderListStatusView(order).border || orderListStatusView(order).color) + '44'
+                        }"
+                      >{{ orderListStatusView(order).label }}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="uor-metrics">
+                  <div class="uor-metric">
+                    <span class="uor-metric-label">类型</span>
+                    <span class="uor-metric-type">{{ pn(order) }}</span>
+                  </div>
+                  <div class="uor-metric">
+                    <span class="uor-metric-label">下单数</span>
+                    <strong>{{ order.ordered_quantity || 0 }}</strong>
+                  </div>
+                  <div class="uor-metric">
+                    <span class="uor-metric-label">完成数</span>
+                    <strong class="is-ok">{{ order.completed_quantity || 0 }}</strong>
+                  </div>
+                  <div class="uor-metric">
+                    <span class="uor-metric-label">付款</span>
+                    <strong class="is-pay">¥{{ fmtMoney(order.actual_paid_amount || 0) }}</strong>
+                  </div>
+                </div>
+
+                <div class="uor-progress">
+                  <div class="uor-progress-track">
+                    <div
+                      class="uor-progress-fill"
+                      :style="{
+                        width: orderProgress(order) + '%',
+                        background: orderProgressTone(order)
+                      }"
+                    ></div>
+                  </div>
+                  <span class="uor-progress-pct">{{ orderProgress(order) }}%</span>
+                </div>
+              </div>
+
+              <Transition
+                :css="false"
+                @before-enter="onUorBeforeEnter"
+                @enter="onUorEnter"
+                @before-leave="onUorBeforeLeave"
+                @leave="onUorLeave"
+              >
+                <div v-if="expandedOrderId === order.id" class="uor-detail-wrap">
+                <div class="uor-detail">
+                <div v-if="userOrderDetailLoading === order.id" class="uor-detail-loading">加载中...</div>
+                <template v-else>
+                  <p class="uor-detail-no mono">{{ detailOrder(order).order_no }}</p>
+                  <div v-if="detailOrder(order).note_url" class="oc-url-row">
+                    <a class="oc-url" :href="detailOrder(order).note_url" target="_blank" rel="noopener">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                      <span>{{ detailOrder(order).note_url }}</span>
+                    </a>
+                    <button
+                      type="button"
+                      class="oc-url-copy"
+                      :class="{ copied: copiedNoteUrlId === order.id }"
+                      :title="copiedNoteUrlId === order.id ? '已复制' : '复制链接'"
+                      aria-label="复制链接"
+                      @click="copyNoteUrl(detailOrder(order).note_url, order.id)"
+                    >
+                      <svg v-if="copiedNoteUrlId !== order.id" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                      <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                    </button>
+                  </div>
+                  <div class="oc-progress-wrap">
+                    <div class="oc-progress-top">
+                      <span>完成进度</span>
+                      <strong :style="{ color: orderProgressTextColor(detailOrder(order)) }">{{ orderProgress(detailOrder(order)) }}%</strong>
+                    </div>
+                    <div class="oc-progress-bar">
+                      <div
+                        class="oc-progress-fill"
+                        :style="{ width: orderProgress(detailOrder(order)) + '%', background: orderProgressTone(detailOrder(order)) }"
+                      ></div>
+                    </div>
+                  </div>
+                  <div class="uor-detail-actions">
+                    <span v-if="pendingOrderIds.includes(order.id)" class="oc-refund-pending">退款申请中</span>
+                    <button
+                      v-else-if="!['completed','refunded','cancelled'].includes(detailOrder(order).order_status)"
+                      type="button"
+                      class="oc-refund-btn"
+                      :disabled="refundingOrderId === order.id"
+                      @click="requestOrderRefund(detailOrder(order))"
+                    >{{ refundingOrderId === order.id ? '提交中...' : '申请退款' }}</button>
+                  </div>
+                </template>
+                </div>
+                </div>
+              </Transition>
+            </div>
+          </template>
+          <div v-else class="empty-state">暂无订单记录</div>
+        </div>
+
+        <!-- 代理 / 管理员：批次列表 -->
+        <div v-else class="batch-list">
           <div v-if="loading" class="empty-state">
             <div class="empty-spinner"></div>
             <span>加载中...</span>
@@ -1263,7 +1675,7 @@ onUnmounted(() => {
             layout="total, prev, pager, next"
             background
             small
-            @current-change="fetchBatches"
+            @current-change="fetchRecords"
           />
         </div>
       </template>
@@ -1371,11 +1783,11 @@ onUnmounted(() => {
       </template>
     </section>
 
-    <!-- 批次订单详情抽屉 -->
-    <Transition name="drawer-fade">
-      <div v-if="showDrawer" class="drawer-mask" @click.self="closeDrawer">
-        <Transition name="drawer-slide">
-          <div v-if="showDrawer" class="order-drawer">
+    <!-- 批次订单详情抽屉（代理/管理员；Teleport 避免被父级 overflow 截断） -->
+    <Teleport to="body">
+      <Transition name="drawer-fade">
+        <div v-if="showDrawer && !isRegularUserOrderView" class="drawer-mask records-drawer-mask" @click.self="closeDrawer">
+          <div class="order-drawer">
             <div class="drawer-drag-bar" aria-hidden="true"><span></span></div>
             <!-- 抽屉头部 -->
             <div class="drawer-header">
@@ -1387,7 +1799,7 @@ onUnmounted(() => {
                     class="refund-pending-tag"
                   >退款申请中</span>
                   <button
-                    v-else-if="drawerBatch && canBatchRefund && !['refunded','cancelled'].includes(drawerBatch.status)"
+                    v-else-if="drawerBatch && canBatchRefund && !isRegularUserOrderView && !['refunded','cancelled'].includes(drawerBatch.status)"
                     type="button"
                     class="refund-btn"
                     :disabled="refunding"
@@ -1398,7 +1810,7 @@ onUnmounted(() => {
                   </button>
                 </div>
               </div>
-              <div v-if="drawerBatch" class="drawer-summary">
+              <div v-if="drawerBatch && !isRegularUserOrderView" class="drawer-summary">
                 <div class="drawer-stats">
                   <div class="drawer-stat drawer-stat--wide">
                     <span class="drawer-stat-label">批次号</span>
@@ -1471,7 +1883,7 @@ onUnmounted(() => {
                 <span>加载中...</span>
               </div>
               <template v-else-if="drawerOrders.length">
-                <div class="drawer-order-count">
+                <div v-if="!isRegularUserOrderView" class="drawer-order-count">
                   <span class="drawer-order-count-badge">{{ drawerOrders.length }}</span>
                   条订单
                 </div>
@@ -1635,9 +2047,9 @@ onUnmounted(() => {
               <div v-else class="drawer-empty">暂无订单数据</div>
             </div>
           </div>
-        </Transition>
-      </div>
-    </Transition>
+        </div>
+      </Transition>
+    </Teleport>
 
     <!-- 补单详情抽屉 -->
     <Transition name="drawer-fade">
@@ -1821,7 +2233,7 @@ onUnmounted(() => {
   --rp-shadow-lg: 0 12px 40px rgba(47, 109, 246, 0.08), 0 4px 12px rgba(21, 32, 51, 0.04);
   max-width: 1200px;
   margin: 0 auto;
-  padding: 20px 20px 40px;
+  padding: 20px 20px 72px;
 }
 
 /* ========== 页面头部 ========== */
@@ -1830,17 +2242,14 @@ onUnmounted(() => {
   border-radius: var(--rp-radius);
   overflow: hidden;
   margin-bottom: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.65);
+  border: 1px solid var(--rp-border);
   box-shadow: var(--rp-shadow-lg);
 }
 
 .hero-bg {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(ellipse 75% 55% at 8% 0%, rgba(238, 77, 122, 0.1), transparent 52%),
-    radial-gradient(ellipse 65% 50% at 92% 100%, rgba(47, 109, 246, 0.12), transparent 48%),
-    linear-gradient(135deg, #f8faff 0%, #fff6f9 42%, #f3f7ff 100%);
+  background: #fff;
 }
 
 .hero-content {
@@ -2088,7 +2497,7 @@ onUnmounted(() => {
   border-radius: var(--rp-radius);
   border: 1px solid var(--rp-border);
   box-shadow: var(--rp-shadow);
-  overflow: hidden;
+  overflow: visible;
 }
 
 /* ========== 筛选栏 ========== */
@@ -2377,7 +2786,7 @@ onUnmounted(() => {
   min-width: 76px;
   padding: 0 20px;
   border-radius: 10px;
-  background: linear-gradient(135deg, var(--rp-accent) 0%, var(--rp-purple) 50%, var(--rp-primary) 100%);
+  background: var(--goosd-primary);
   color: #fff;
   font-size: 13px;
   font-weight: 700;
@@ -2385,13 +2794,14 @@ onUnmounted(() => {
   cursor: pointer;
   white-space: nowrap;
   flex-shrink: 0;
-  box-shadow: 0 4px 14px rgba(47, 109, 246, 0.22);
-  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 240ms ease;
+  box-shadow: var(--goosd-btn-shadow);
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 240ms ease, filter 240ms ease;
 }
 
 .btn-search:hover {
   transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(91, 141, 239, 0.28);
+  box-shadow: var(--goosd-btn-shadow-hover);
+  background: var(--goosd-primary-dark);
 }
 
 .btn-search:active { transform: scale(0.97); }
@@ -2576,6 +2986,12 @@ onUnmounted(() => {
   background: #f0fdf4;
 }
 
+.batch-chip--muted {
+  color: var(--rp-text-3);
+  background: #f8fafc;
+  font-size: 11px;
+}
+
 .batch-chip--warn {
   color: #d97706;
   background: #fffbeb;
@@ -2749,7 +3165,7 @@ onUnmounted(() => {
 }
 
 .pagination-wrap :deep(.el-pagination.is-background .el-pager li.is-active) {
-  background: linear-gradient(135deg, var(--rp-purple), var(--rp-primary));
+  background: var(--goosd-primary);
 }
 
 /* ========== 补单记录 ========== */
@@ -3061,7 +3477,312 @@ onUnmounted(() => {
   display: inline-block;
 }
 
-/* ========== 抽屉 ========== */
+/* ========== 普通用户订单列表 ========== */
+
+.user-order-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 2px 12px;
+}
+
+.user-order-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  width: 100%;
+  border: 1px solid #e8eef6;
+  border-radius: 16px;
+  background: #fff;
+  text-align: left;
+  box-shadow: 0 1px 3px rgba(21, 32, 51, 0.04);
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+  overflow: hidden;
+}
+
+.user-order-row.is-expanded {
+  border-color: #b8ccfa;
+  box-shadow: 0 10px 28px rgba(47, 109, 246, 0.1);
+}
+
+.user-order-row.is-detail-loading .uor-clickable {
+  cursor: wait;
+  opacity: 0.78;
+}
+
+.user-order-row.is-detail-loading .uor-chevron {
+  animation: uor-chevron-pulse 0.85s ease-in-out infinite;
+}
+
+@keyframes uor-chevron-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+.uor-clickable {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 100%;
+  padding: 16px;
+  cursor: pointer;
+  font-family: inherit;
+  background: transparent;
+  border: none;
+  text-align: left;
+}
+
+.uor-clickable:hover {
+  background: linear-gradient(180deg, #fbfcff 0%, #fff 100%);
+}
+
+.uor-clickable:focus-visible {
+  outline: 2px solid rgba(47, 109, 246, 0.35);
+  outline-offset: -2px;
+}
+
+.uor-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.uor-avatar-wrap {
+  flex-shrink: 0;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #f1f5f9;
+  border: 1px solid #eef2f7;
+  box-shadow: 0 2px 8px rgba(21, 32, 51, 0.06);
+}
+
+.uor-avatar {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.uor-avatar-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-size: 17px;
+  font-weight: 800;
+  color: #64748b;
+  background: linear-gradient(145deg, #f8fafc, #eef2f7);
+}
+
+.uor-body {
+  min-width: 0;
+  flex: 1;
+  padding-top: 2px;
+}
+
+.uor-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.uor-title {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--rp-text);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.uor-chevron {
+  flex-shrink: 0;
+  margin-top: 3px;
+  color: #c0c9d6;
+  transition: transform 380ms cubic-bezier(0.22, 1, 0.36, 1), color 280ms ease;
+}
+
+.uor-clickable:hover .uor-chevron {
+  color: #2f6df6;
+}
+
+.uor-chevron--open {
+  transform: rotate(90deg);
+  color: #2f6df6;
+}
+
+.uor-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.uor-time {
+  font-size: 12px;
+  color: var(--rp-text-3);
+}
+
+.uor-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0;
+  padding: 12px 0 2px;
+  border-top: 1px solid #f0f3f8;
+}
+
+.uor-metric {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 0 4px;
+  position: relative;
+}
+
+.uor-metric + .uor-metric::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 1px;
+  height: 28px;
+  background: #eef2f7;
+}
+
+.uor-metric-label {
+  font-size: 11px;
+  color: #9aa5b5;
+  white-space: nowrap;
+}
+
+.uor-metric strong {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--rp-text);
+  line-height: 1.2;
+}
+
+.uor-metric-type {
+  display: inline-flex;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #2f6df6;
+  background: rgba(47, 109, 246, 0.08);
+}
+
+.uor-metric .is-ok {
+  color: #22a858;
+}
+
+.uor-metric .is-pay {
+  color: var(--rp-text);
+  font-size: 14px;
+}
+
+.uor-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.uor-progress-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: #eef2f7;
+  overflow: hidden;
+}
+
+.uor-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  transition: width 400ms ease;
+}
+
+.uor-progress-pct {
+  flex-shrink: 0;
+  min-width: 32px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--rp-text-3);
+  text-align: right;
+}
+
+.uor-detail-wrap {
+  overflow: hidden;
+}
+
+.uor-detail {
+  padding: 14px 16px 16px;
+  border-top: 1px solid #eef2f7;
+  background: linear-gradient(180deg, #f8faff 0%, #fff 100%);
+}
+
+.uor-detail-loading {
+  padding: 16px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--rp-text-3);
+}
+
+.uor-detail-no {
+  margin: 14px 0 10px;
+  font-size: 12px;
+  color: var(--rp-text-3);
+  word-break: break-all;
+}
+
+.uor-detail .oc-url-row {
+  margin-bottom: 12px;
+}
+
+.uor-detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.uor-status {
+  display: inline-flex;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.records-drawer-mask {
+  z-index: 10050;
+}
+
+.records-drawer-mask .order-drawer {
+  animation: recordsDrawerSlideIn 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes recordsDrawerSlideIn {
+  from { transform: translateX(100%); }
+}
+
+.order-drawer--user .drawer-header {
+  padding-bottom: 14px;
+}
 
 .drawer-mask {
   position: fixed;
@@ -3997,8 +4718,8 @@ onUnmounted(() => {
   .stat-top { gap: 8px; }
   .stat-icon { width: 32px; height: 32px; }
   .stat-icon svg { width: 15px; height: 15px; }
-  .stat-label { font-size: 12px; }
-  .stat-value { font-size: 20px; }
+  .stat-label { font-size: 11px; }
+  .stat-value { font-size: 16px; }
 
   .filter-bar {
     flex-direction: column;
@@ -4008,9 +4729,19 @@ onUnmounted(() => {
     border-top: none;
   }
 
-  .page-hero { margin-bottom: 14px; }
-  .hero-content { padding: 18px 16px; }
-  .hero-title { font-size: 19px; }
+  .page-hero { margin-bottom: 10px; }
+  .hero-content { padding: 14px 14px; }
+  .hero-badge {
+    font-size: 10px;
+    padding: 3px 10px;
+    margin-bottom: 6px;
+  }
+  .hero-title { font-size: 16px; }
+  .hero-desc {
+    font-size: 12px;
+    line-height: 1.45;
+    margin-top: 4px;
+  }
 
   .filter-toolbar {
     width: 100%;
@@ -4109,8 +4840,12 @@ onUnmounted(() => {
   }
 
   .filter-total {
-    padding: 5px 12px;
-    font-size: 12px;
+    padding: 4px 10px;
+    font-size: 11px;
+  }
+
+  .filter-total-num {
+    font-size: 13px;
   }
 
   .filter-btns {
@@ -4142,8 +4877,9 @@ onUnmounted(() => {
 
   .mobile-tab {
     flex: 1;
-    padding: 10px 0;
-    font-size: 13px;
+    padding: 8px 0;
+    font-size: 12px;
+    font-weight: 700;
     border-radius: 10px 10px 0 0;
     border-bottom: none;
     background: transparent;
@@ -4480,6 +5216,78 @@ onUnmounted(() => {
   }
 
   /* 底部弹窗动画：上下滑动 */
+  .records-drawer-mask .order-drawer {
+    animation: recordsDrawerSlideUp 320ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  @keyframes recordsDrawerSlideUp {
+    from { transform: translateY(100%); }
+  }
+
+  .user-order-row.is-expanded {
+    box-shadow: 0 6px 18px rgba(47, 109, 246, 0.07);
+  }
+
+  .uor-clickable {
+    padding: 14px;
+    gap: 12px;
+  }
+
+  .uor-avatar-wrap {
+    width: 46px;
+    height: 46px;
+    border-radius: 12px;
+  }
+
+  .uor-title {
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .uor-time {
+    font-size: 11px;
+  }
+
+  .uor-metric-label {
+    font-size: 10px;
+  }
+
+  .uor-metric-type {
+    font-size: 11px;
+    padding: 2px 8px;
+  }
+
+  .uor-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 12px;
+    padding-top: 10px;
+  }
+
+  .uor-metric:nth-child(3)::before,
+  .uor-metric:nth-child(4)::before {
+    display: none;
+  }
+
+  .uor-metric:nth-child(odd)::before {
+    display: none;
+  }
+
+  .uor-metric:nth-child(even)::before {
+    display: block;
+  }
+
+  .uor-metric strong {
+    font-size: 13px;
+  }
+
+  .uor-metric .is-pay {
+    font-size: 13px;
+  }
+
+  .uor-detail {
+    padding: 12px 14px 14px;
+  }
+
   .drawer-slide-enter-from {
     transform: translateY(100%);
   }

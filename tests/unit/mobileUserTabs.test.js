@@ -24,4 +24,11 @@ describe('mobile user tabs', () => {
     expect(isMobileUserTabSelected(mineTab, '首页', true)).toBe(true)
     expect(isMobileUserTabSelected(mineTab, '首页', false)).toBe(false)
   })
+
+  it('marks consumption tab active on consumption nav', () => {
+    const tab = { key: 'consumption', nav: '消费记录' }
+
+    expect(isMobileUserTabSelected(tab, '消费记录', false)).toBe(true)
+    expect(isMobileUserTabSelected(tab, '下单记录', false)).toBe(false)
+  })
 })

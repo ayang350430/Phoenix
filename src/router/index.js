@@ -75,6 +75,12 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/consumption-records',
+    name: 'ConsumptionRecords',
+    component: () => import('../components/ConsumptionRecordsPage.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/chat-history',
     name: 'ChatHistory',
     component: () => import('../components/ChatHistoryPage.vue'),

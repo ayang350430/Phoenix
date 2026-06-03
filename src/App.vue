@@ -1,8 +1,11 @@
 <script setup>
-import { computed, watch } from 'vue'
+import { computed, defineAsyncComponent, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from './i18n'
-import WorkspaceLayout from './components/WorkspaceLayout.vue'
+
+const WorkspaceLayout = defineAsyncComponent(() =>
+  import('./components/WorkspaceLayout.vue')
+)
 
 const { t, locale } = useI18n()
 const route = useRoute()
@@ -14,6 +17,7 @@ watch([locale, () => route.name], () => {
   document.title = name === 'Admin' ? '权限管理 - Phoenix'
     : name === 'Batch' ? '批量下单 - Phoenix'
     : name === 'MyOrders' ? '下单记录 - Phoenix'
+    : name === 'ConsumptionRecords' ? '消费记录 - Phoenix'
     : name === 'Dashboard' ? t('dashboard.siteTitle')
     : name === 'Login' ? t('login.siteTitle')
     : t('siteTitle')
@@ -24,7 +28,7 @@ watch([locale, () => route.name], () => {
   <div class="page">
     <router-view v-slot="{ Component, route }">
       <WorkspaceLayout v-if="isAuthPage">
-        <Transition name="page-fade" mode="out-in">
+        <Transition name="page-fade">
           <div :key="route.path" class="page-transition-wrap">
             <component :is="Component" />
           </div>
@@ -53,21 +57,22 @@ watch([locale, () => route.name], () => {
 
 <style>
 /* 路由切换进场动画（需全局，作用于 Transition 包裹层） */
-.page-fade-enter-active,
+.page-fade-enter-active {
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
 .page-fade-leave-active {
-  transition:
-    opacity 0.28s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: opacity 0.1s ease;
+  pointer-events: none;
 }
 
 .page-fade-enter-from {
   opacity: 0;
-  transform: translateY(14px);
+  transform: translateY(6px);
 }
 
 .page-fade-leave-to {
   opacity: 0;
-  transform: translateY(-8px);
 }
 
 @media (prefers-reduced-motion: reduce) {

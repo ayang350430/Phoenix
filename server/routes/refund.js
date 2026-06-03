@@ -3,6 +3,7 @@ import { authRequired, roleRequired } from '../middleware/auth.js'
 import { cancelTask } from '../services/xhsApi.js'
 import { clawbackAgentCommission } from '../services/agentCommission.js'
 import { refreshBatchStatus } from '../services/batchStatus.js'
+import { calcRefundAmount } from '../utils/refundAmount.js'
 import db from '../db.js'
 
 const router = Router()
@@ -126,7 +127,7 @@ async function refundSingleOrder(trx, order, userId, ts, idx, fullRefund = false
     await cancelTask(order.target_type, order.external_task_id, prod?.api_endpoint)
   }
 
-  const refundAmount = Math.round(refundQty * unitPrice * 10000) / 10000
+  const refundAmount = calcRefundAmount(chargeRec, refundQty, orderedQty)
   const completedQty = order.completed_quantity || 0
   const newStatus = completedQty > 0 ? 'partial_completed' : 'refunded'
   const now = new Date()

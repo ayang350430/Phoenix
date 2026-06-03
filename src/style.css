@@ -15,6 +15,12 @@
 
   /* 辅助色（余额、强调，非主色） */
   --goosd-accent: #ee4d7a;
+
+  /* 主按钮：统一纯色 #2f6df6 */
+  --goosd-btn-bg: var(--goosd-primary);
+  --goosd-btn-bg-hover: var(--goosd-primary-dark);
+  --goosd-btn-shadow: 0 4px 14px rgba(47, 109, 246, 0.22);
+  --goosd-btn-shadow-hover: 0 6px 18px rgba(47, 109, 246, 0.28);
 }
 
 * {

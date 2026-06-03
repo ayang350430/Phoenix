@@ -1,10 +1,4 @@
 import { createApp } from 'vue'
-import { ElMessageBox } from 'element-plus'
-import 'element-plus/es/components/message/style/css'
-import 'element-plus/es/components/message-box/style/css'
-import 'element-plus/es/components/notification/style/css'
-import 'element-plus/es/components/pagination/style/css'
-import 'element-plus/es/components/date-picker/style/css'
 import './style.css'
 import App from './App.vue'
 import router from './router'
@@ -21,6 +15,10 @@ window.fetch = async function (...args) {
         kickHandled = true
         localStorage.removeItem('token')
         localStorage.removeItem('user')
+        const [{ ElMessageBox }] = await Promise.all([
+          import('element-plus'),
+          import('element-plus/es/components/message-box/style/css')
+        ])
         ElMessageBox.alert(body.message || '账号已在其他地方登录，您已被迫下线', '下线通知', {
           confirmButtonText: '重新登录',
           type: 'warning',
@@ -30,7 +28,7 @@ window.fetch = async function (...args) {
           }
         })
       }
-    } catch {}
+    } catch { /* ignore */ }
   }
   return res
 }

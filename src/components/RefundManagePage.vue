@@ -555,17 +555,14 @@ onMounted(fetchList)
   border-radius: var(--rp-radius);
   overflow: hidden;
   margin-bottom: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.65);
+  border: 1px solid var(--rp-border);
   box-shadow: var(--rp-shadow-lg);
 }
 
 .hero-bg {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(ellipse 75% 55% at 8% 0%, rgba(238, 77, 122, 0.1), transparent 52%),
-    radial-gradient(ellipse 65% 50% at 92% 100%, rgba(47, 109, 246, 0.12), transparent 48%),
-    linear-gradient(135deg, #f8faff 0%, #fff6f9 42%, #f3f7ff 100%);
+  background: #fff;
 }
 
 .hero-content {
@@ -722,9 +719,9 @@ onMounted(fetchList)
 }
 
 .filter-btn.active {
-  background: linear-gradient(135deg, var(--rp-purple), var(--rp-primary));
+  background: var(--goosd-primary);
   color: #fff;
-  box-shadow: 0 4px 12px rgba(47, 109, 246, 0.22);
+  box-shadow: var(--goosd-btn-shadow);
 }
 
 .filter-btn.active[data-tone="pending"] {
@@ -1015,10 +1012,10 @@ onMounted(fetchList)
 }
 
 .page-btn.active {
-  background: linear-gradient(135deg, var(--rp-purple), var(--rp-primary));
+  background: var(--goosd-primary);
   color: #fff;
   border-color: transparent;
-  box-shadow: 0 4px 12px rgba(47, 109, 246, 0.22);
+  box-shadow: var(--goosd-btn-shadow);
 }
 
 .page-btn:disabled {
@@ -1087,9 +1084,9 @@ onMounted(fetchList)
 .cm-btn.cancel:hover { background: #eef2f7; }
 
 .cm-btn.ok {
-  background: linear-gradient(135deg, var(--rp-accent), var(--rp-purple), var(--rp-primary));
+  background: var(--goosd-primary);
   color: #fff;
-  box-shadow: 0 6px 16px rgba(47, 109, 246, 0.22);
+  box-shadow: var(--goosd-btn-shadow);
 }
 
 .modal-fade-enter-active,

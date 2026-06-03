@@ -571,17 +571,14 @@ async function toggleUserStatus(user) {
   border-radius: var(--rp-radius);
   overflow: hidden;
   margin-bottom: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.65);
+  border: 1px solid var(--rp-border);
   box-shadow: var(--rp-shadow-lg);
 }
 
 .hero-bg {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(ellipse 75% 55% at 8% 0%, rgba(139, 123, 247, 0.12), transparent 52%),
-    radial-gradient(ellipse 65% 50% at 92% 100%, rgba(47, 109, 246, 0.12), transparent 48%),
-    linear-gradient(135deg, #f8faff 0%, #fff6f9 42%, #f3f7ff 100%);
+  background: #fff;
 }
 
 .hero-content {
@@ -924,14 +921,15 @@ async function toggleUserStatus(user) {
   white-space: nowrap;
   flex-shrink: 0;
   cursor: pointer;
-  background: linear-gradient(135deg, var(--rp-purple), var(--rp-primary));
-  box-shadow: 0 4px 14px rgba(47, 109, 246, 0.22);
-  transition: transform 200ms ease, box-shadow 200ms ease;
+  background: var(--goosd-primary);
+  box-shadow: var(--goosd-btn-shadow);
+  transition: transform 200ms ease, box-shadow 200ms ease, filter 200ms ease;
 }
 
 .btn-search:hover {
   transform: translateY(-1px);
-  box-shadow: 0 6px 18px rgba(47, 109, 246, 0.28);
+  box-shadow: var(--goosd-btn-shadow-hover);
+  background: var(--goosd-primary-dark);
 }
 
 .admin-total {

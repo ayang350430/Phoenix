@@ -589,12 +589,12 @@ async function saveEditQuestion() {
 .eq-footer .btn-cancel:hover { background: #f8fafc; color: #8b5cf6; border-color: #ddd6fe; }
 .eq-footer .btn-submit {
   flex: 1.5; padding: 11px 0; border-radius: 12px;
-  background: linear-gradient(135deg, #8b5cf6, #6366f1); border: none;
+  background: #2f6df6; border: none;
   color: #fff; font-weight: 700; font-size: 14px;
-  cursor: pointer; box-shadow: 0 8px 20px rgba(139,92,246,.22);
-  transition: transform 200ms cubic-bezier(.22,1,.36,1), box-shadow 200ms ease; font-family: inherit;
+  cursor: pointer; box-shadow: 0 8px 20px rgba(47, 109, 246, 0.22);
+  transition: transform 200ms cubic-bezier(.22,1,.36,1), box-shadow 200ms ease, background 200ms ease; font-family: inherit;
 }
-.eq-footer .btn-submit:hover { transform: translateY(-1px); box-shadow: 0 12px 28px rgba(139,92,246,.3); }
+.eq-footer .btn-submit:hover { transform: translateY(-1px); background: #2558d4; box-shadow: 0 12px 28px rgba(47, 109, 246, 0.28); }
 .eq-footer .btn-submit:active { transform: scale(.98); }
 
 .modal-fade-enter-active, .modal-fade-leave-active { transition: opacity 220ms ease; }

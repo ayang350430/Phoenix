@@ -1,17 +1,7 @@
 <script setup>
 import { computed, inject, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import * as echarts from 'echarts/core'
-import { LineChart } from 'echarts/charts'
-import { GridComponent, TooltipComponent } from 'echarts/components'
-import { CanvasRenderer } from 'echarts/renderers'
-echarts.use([LineChart, GridComponent, TooltipComponent, CanvasRenderer])
-import iconPin from '../assets/batch-submit_pl.png'
-import iconYuedu from '../assets/read-task_yd.png'
-import iconDianzan from '../assets/like-task_dz.png'
-import iconBao from '../assets/exposure-task_bg.png'
-import iconYan from '../assets/pre-check_jy.png'
-import iconXiadan from '../assets/order-record_xd.png'
+import DashboardAppIcon from './DashboardAppIcon.vue'
 
 const router = useRouter()
 
@@ -22,12 +12,12 @@ const showActivityAndFlow = computed(() => isAdmin.value || isAgent.value)
 
 // ========== 应用 & 导航 ==========
 const allApps = [
-  { name: '批量提交', tone: 'pink', icon: '批', img: iconPin },
-  { name: '阅读任务', tone: 'blue', icon: '阅', img: iconYuedu },
-  { name: '点赞任务', tone: 'purple', icon: '赞', img: iconDianzan },
-  { name: '曝光任务', tone: 'cyan', icon: '曝', img: iconBao },
-  { name: '预校验', tone: 'green', icon: '验', img: iconYan },
-  { name: '下单记录', tone: 'orange', icon: '单', img: iconXiadan, adminOnly: true }
+  { name: '批量提交', tone: 'pink', icon: 'batch' },
+  { name: '阅读任务', tone: 'blue', icon: 'read' },
+  { name: '点赞任务', tone: 'purple', icon: 'like' },
+  { name: '曝光任务', tone: 'cyan', icon: 'impression' },
+  { name: '预校验', tone: 'green', icon: 'validate' },
+  { name: '下单记录', tone: 'orange', icon: 'records', adminOnly: true }
 ]
 const apps = computed(() => isAdmin.value ? allApps : allApps.filter(a => !a.adminOnly))
 
@@ -36,7 +26,7 @@ const dashLoading = ref(false)
 
 
 // 底部卡片导航
-const bottomNavs = ['数据概览', '类型汇总', '最近订单', '最近批次']
+const bottomNavs = ['数据概览', '类型汇总']
 const activeBottomNav = ref('数据概览')
 
 
@@ -56,9 +46,7 @@ function handleApp(app) {
 
 // ========== 仪表盘真实数据 ==========
 const notifications = ref([])
-const recentOrders = ref([])
 const recentRecords = ref([])
-const recentBatches = ref([])
 const stats = ref({ total_batches: 0, total_orders: 0, by_type: [], by_status: [], balance: 0 })
 const totalOrders = ref(0)
 const totalBatches = ref(0)
@@ -81,10 +69,6 @@ const recordTypeMap = {
 }
 
 function formatType(t) { return typeMap[t] || t || '其他' }
-function pn(item) {
-  if (item.product_name) return item.product_name.replace(/^小红书/, '')
-  return formatType(item.target_type)
-}
 function formatStatus(s) { return statusMap[s] || s || '-' }
 function formatRecordType(r) { return r.remark || recordTypeMap[r.record_type] || r.record_type || '-' }
 function isIncomeRecord(r) { return r.direction === 'in' || r.direction === 'credit' }
@@ -141,19 +125,39 @@ const statCards = computed(() => {
   return cards
 })
 
-// ========== ECharts 折线图 ==========
+// ========== ECharts 折线图（按需加载，避免首屏解析整包 echarts） ==========
 const chartRef = ref(null)
 let chartInstance = null
+let echartsApi = null
 
-function initChart() {
+async function loadEcharts() {
+  if (echartsApi) return echartsApi
+  const [core, charts, components, renderers] = await Promise.all([
+    import('echarts/core'),
+    import('echarts/charts'),
+    import('echarts/components'),
+    import('echarts/renderers')
+  ])
+  core.use([
+    charts.LineChart,
+    components.GridComponent,
+    components.TooltipComponent,
+    renderers.CanvasRenderer
+  ])
+  echartsApi = core
+  return echartsApi
+}
+
+async function initChart() {
   if (!chartRef.value) return
+  const echarts = await loadEcharts()
   if (chartInstance) chartInstance.dispose()
   chartInstance = echarts.init(chartRef.value)
   updateChart()
 }
 
 function updateChart() {
-  if (!chartInstance) return
+  if (!chartInstance || !echartsApi) return
   const data = dailyStats.value
   const dates = data.map(d => {
     const dt = new Date(d.date + 'T00:00:00')
@@ -201,7 +205,7 @@ function updateChart() {
       lineStyle: { color: '#2f6df6', width: 3 },
       itemStyle: { color: '#2f6df6', borderColor: '#fff', borderWidth: 2 },
       areaStyle: {
-        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+        color: new echartsApi.graphic.LinearGradient(0, 0, 0, 1, [
           { offset: 0, color: 'rgba(47, 109, 246, 0.28)' },
           { offset: 1, color: 'rgba(47, 109, 246, 0.03)' }
         ])
@@ -247,9 +251,7 @@ async function fetchDashboard() {
       const d = data.data
       stats.value = d.stats || stats.value
       notifications.value = d.notifications || []
-      recentOrders.value = d.recent_orders || []
       recentRecords.value = d.recent_records || []
-      recentBatches.value = d.recent_batches || []
       totalOrders.value = d.total_orders || 0
       totalBatches.value = d.total_batches || 0
       dailyStats.value = d.daily_stats || []
@@ -283,6 +285,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', handleChartResize)
   chartInstance?.dispose()
   chartInstance = null
+  echartsApi = null
 })
 </script>
 
@@ -327,9 +330,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="app-grid">
         <button v-for="app in apps" :key="app.name" type="button" class="app-item" @click="handleApp(app)">
-          <span class="app-icon">
-            <img :src="app.img" :alt="app.name" />
-          </span>
+          <DashboardAppIcon :type="app.icon" :tone="app.tone" />
           <strong>{{ app.name }}</strong>
         </button>
       </div>
@@ -407,14 +408,26 @@ onBeforeUnmount(() => {
 
     <!-- 底部导航卡片 -->
     <section class="card bottom-card">
-      <div class="bottom-tabs">
-        <button v-for="nav in bottomNavs" :key="nav" type="button" :class="{ active: activeBottomNav === nav }"
-          @click="activeBottomNav = nav">{{ nav }}</button>
+      <div class="bottom-card-toolbar">
+        <div class="bottom-tabs" role="tablist" aria-label="数据视图切换">
+          <button
+            v-for="nav in bottomNavs"
+            :key="nav"
+            type="button"
+            role="tab"
+            class="bottom-tab"
+            :class="{ active: activeBottomNav === nav }"
+            :aria-selected="activeBottomNav === nav"
+            @click="activeBottomNav = nav"
+          >{{ nav }}</button>
+        </div>
+        <p class="bottom-toolbar-hint">
+          {{ activeBottomNav === '数据概览' ? '近 7 日订单趋势' : '按任务类型统计' }}
+        </p>
       </div>
 
       <!-- 数据概览 -->
       <div v-if="activeBottomNav === '数据概览'" class="bottom-content bottom-chart">
-        <p class="chart-section-title">近 7 日订单趋势</p>
         <div v-if="dailyStats.some(d => d.count > 0)" ref="chartRef" class="echarts-container"></div>
         <p v-else class="empty-hint">暂无趋势数据</p>
       </div>
@@ -428,30 +441,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <p v-else class="empty-hint">暂无类型数据</p>
-      </div>
-
-      <!-- 最近订单 -->
-      <div v-else-if="activeBottomNav === '最近订单'" class="bottom-content bottom-list">
-        <ul v-if="recentOrders.length" class="feed-list">
-          <li v-for="o in recentOrders" :key="o.id" class="feed-row">
-            <span class="feed-chip">{{ pn(o) }}</span>
-            <span class="feed-text">{{ o.title || o.note_url || o.order_no }}</span>
-            <time>{{ formatTime(o.created_at) }}</time>
-          </li>
-        </ul>
-        <p v-else class="empty-hint">暂无订单</p>
-      </div>
-
-      <!-- 最近批次 -->
-      <div v-else-if="activeBottomNav === '最近批次'" class="bottom-content bottom-list">
-        <ul v-if="recentBatches.length" class="feed-list">
-          <li v-for="b in recentBatches" :key="b.id" class="feed-row">
-            <span class="feed-chip feed-chip--batch">批次</span>
-            <span class="feed-text feed-text--mono">{{ b.batch_no || b.batch_id }}</span>
-            <time>{{ formatTime(b.created_at) }}</time>
-          </li>
-        </ul>
-        <p v-else class="empty-hint">暂无批次</p>
       </div>
     </section>
   </section>
@@ -597,14 +586,15 @@ onBeforeUnmount(() => {
   color: #fff;
   font-size: 14px;
   font-weight: 700;
-  background: var(--dash-primary);
-  box-shadow: 0 8px 20px rgba(47, 109, 246, 0.28);
-  transition: transform 180ms ease, box-shadow 180ms ease;
+  background: var(--goosd-primary);
+  box-shadow: var(--goosd-btn-shadow);
+  transition: transform 180ms ease, box-shadow 180ms ease, filter 180ms ease;
 }
 
 .dash-hero-cta:hover {
   transform: translateY(-1px);
-  box-shadow: 0 10px 24px rgba(47, 109, 246, 0.32);
+  background: var(--goosd-primary-dark);
+  box-shadow: var(--goosd-btn-shadow-hover);
 }
 
 .dash-stat-grid {
@@ -687,23 +677,6 @@ onBeforeUnmount(() => {
 
 .app-item:active {
   transform: scale(0.98);
-}
-
-.app-icon {
-  width: 44px;
-  height: 44px;
-  display: grid;
-  place-items: center;
-  border-radius: 12px;
-  background: #fff;
-  border: 1px solid var(--dash-border);
-  overflow: hidden;
-}
-
-.app-icon img {
-  width: 32px;
-  height: 32px;
-  object-fit: contain;
 }
 
 .app-item strong {
@@ -1282,36 +1255,68 @@ onBeforeUnmount(() => {
   padding: 18px 20px 22px;
 }
 
-.bottom-tabs {
+.bottom-card-toolbar {
   display: flex;
-  width: 100%;
-  gap: 4px;
-  padding: 4px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 16px;
-  border-radius: 12px;
-  background: #f1f5f9;
+  flex-wrap: wrap;
 }
 
-.bottom-tabs button {
-  flex: 1;
-  padding: 9px 10px;
-  border-radius: 9px;
-  color: var(--dash-muted);
+.bottom-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  background: transparent;
+}
+
+.bottom-tab {
+  flex: none;
+  min-width: 96px;
+  padding: 8px 20px;
+  border-radius: 999px;
+  border: 1px solid var(--dash-border);
+  background: #fff;
+  color: var(--dash-text-2);
   font-weight: 600;
   font-size: 13px;
   text-align: center;
   white-space: nowrap;
-  transition: color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+  transition:
+    color 220ms ease,
+    background 220ms ease,
+    border-color 220ms ease,
+    box-shadow 220ms ease,
+    transform 220ms ease;
 }
 
-.bottom-tabs button:hover {
-  color: var(--dash-text);
-}
-
-.bottom-tabs button.active {
+.bottom-tab:hover {
   color: var(--dash-primary);
-  background: #fff;
-  box-shadow: 0 2px 8px rgba(21, 32, 51, 0.08);
+  border-color: rgba(47, 109, 246, 0.28);
+  background: #f8faff;
+}
+
+.bottom-tab.active {
+  color: #fff;
+  background: var(--dash-primary);
+  border-color: var(--dash-primary);
+  box-shadow: 0 4px 14px rgba(47, 109, 246, 0.28);
+}
+
+.bottom-tab.active:hover {
+  color: #fff;
+  background: #2558d4;
+  border-color: #2558d4;
+}
+
+.bottom-toolbar-hint {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dash-muted);
+  white-space: nowrap;
 }
 
 .bottom-content {
@@ -1648,24 +1653,13 @@ onBeforeUnmount(() => {
     background: #f8fafc;
   }
 
-  .app-icon {
-    width: 48px;
-    height: 48px;
-    border-radius: 14px;
-  }
-
-  .app-icon img {
-    width: 34px;
-    height: 34px;
-  }
-
   .app-item strong {
     font-size: 11px;
     white-space: normal;
   }
 
   .card-title h2 {
-    font-size: 16px;
+    font-size: 15px;
   }
 
   .card-title button {
@@ -1701,33 +1695,43 @@ onBeforeUnmount(() => {
     gap: 4px;
   }
 
+  .notify-list li {
+    padding: 8px 2px;
+    gap: 8px;
+  }
+
   .notify-list li.ntype-recharge {
     background: rgba(47, 109, 246, 0.04);
   }
 
   .notify-icon {
-    width: 40px;
-    height: 40px;
-    border-radius: 50%;
-    font-size: 18px;
-    margin-top: 2px;
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+    font-size: 13px;
+    margin-top: 0;
+  }
+
+  .notify-head {
+    gap: 6px;
   }
 
   .notify-title {
-    font-size: 15px;
-    font-weight: 700;
+    font-size: 12px;
+    font-weight: 600;
     white-space: normal;
+    line-height: 1.35;
   }
 
   .notify-desc {
     white-space: normal;
-    line-height: 1.5;
-    margin-top: 6px;
-    font-size: 13px;
+    line-height: 1.4;
+    margin-top: 3px;
+    font-size: 11px;
   }
 
   .notify-time {
-    font-size: 12px;
+    font-size: 10px;
   }
 
   .type-stat-grid {
@@ -1763,12 +1767,33 @@ onBeforeUnmount(() => {
   }
 
   .balance-flow-item {
-    gap: 9px;
-    padding: 10px 0;
+    gap: 8px;
+    padding: 8px 0;
+  }
+
+  .flow-mark {
+    width: 30px;
+    height: 30px;
+    border-radius: 9px;
+  }
+
+  .flow-mark svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .flow-main strong {
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .flow-main time {
+    font-size: 10px;
   }
 
   .flow-amount {
-    font-size: 14px;
+    font-size: 12px;
+    font-weight: 800;
   }
 
   .side-column {
@@ -1790,18 +1815,27 @@ onBeforeUnmount(() => {
     border-radius: 16px;
   }
 
-  .bottom-tabs {
-    gap: 4px;
-    overflow-x: auto;
-    -webkit-overflow-scrolling: touch;
-    flex-wrap: nowrap;
+  .bottom-card-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
   }
 
-  .bottom-tabs button {
+  .bottom-tabs {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .bottom-tab {
+    flex: 1;
+    min-width: 0;
     font-size: 13px;
-    padding: 6px 14px;
-    white-space: nowrap;
-    flex-shrink: 0;
+    padding: 9px 12px;
+  }
+
+  .bottom-toolbar-hint {
+    text-align: center;
+    font-size: 12px;
   }
 
   .bottom-list li span {

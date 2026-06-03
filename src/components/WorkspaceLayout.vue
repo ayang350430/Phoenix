@@ -1,10 +1,13 @@
 <script setup>
-import { computed, nextTick, onMounted, onBeforeUnmount, provide, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onMounted, onBeforeUnmount, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElNotification, ElMessageBox } from 'element-plus'
-import { House, Search, ShoppingCart, Tickets, UserFilled } from '@element-plus/icons-vue'
+import 'element-plus/es/components/notification/style/css'
+import 'element-plus/es/components/message-box/style/css'
+import { House, Search, ShoppingCart, Tickets, UserFilled, Wallet } from '@element-plus/icons-vue'
 import logoSvg from '../assets/logo.svg'
-import ChatWidget from './ChatWidget.vue'
+
+const ChatWidget = defineAsyncComponent(() => import('./ChatWidget.vue'))
 import { getMobileUserTabAction, isMobileUserTabSelected } from '../utils/mobileUserTabs.js'
 import { canShowReferralLink } from '../utils/referralVisibility.js'
 
@@ -94,16 +97,34 @@ function fallbackCopy(text) {
 // ========== 导航 ==========
 const baseNavs = ['首页', '批量下单', '查询订单']
 const navs = computed(() => {
-  if (isAdmin.value) return ['首页', '批量下单', '记录中心', '查询订单', '退款申请', '在线客服', '聊天记录', '客服配置', '嵌入指南', '权限管理']
+  if (isAdmin.value) return ['首页', '批量下单', '记录中心', '消费记录', '查询订单', '退款申请', '在线客服', '聊天记录', '客服配置', '嵌入指南', '权限管理']
   if (isAgent.value) {
-    const items = [...baseNavs, '下单记录', '商品管理']
+    const items = [...baseNavs, '下单记录', '消费记录', '商品管理']
     if (isSupport.value) items.push('在线客服')
     return items
   }
   if (isSupport.value) return ['在线客服']
-  return ['首页', '批量下单', '下单记录', '查询订单']
+  return ['首页', '批量下单', '下单记录', '消费记录', '查询订单']
 })
 const activeNav = ref('首页')
+/** 点击后立即高亮，不等到路由 chunk 加载完成 */
+const pendingNav = ref(null)
+
+const NAV_ROUTE_MAP = {
+  权限管理: '/admin',
+  商品管理: '/products',
+  批量下单: '/batch',
+  记录中心: '/records',
+  下单记录: '/my-orders',
+  在线客服: '/support',
+  聊天记录: '/chat-history',
+  客服配置: '/cs-config',
+  退款申请: '/refund',
+  查询订单: '/order-lookup',
+  消费记录: '/consumption-records',
+  嵌入指南: '/embed-guide',
+  首页: '/dashboard'
+}
 
 // 根据路由设置初始激活导航
 if (route.path === '/admin') activeNav.value = '权限管理'
@@ -116,9 +137,11 @@ else if (route.path === '/chat-history') activeNav.value = '聊天记录'
 else if (route.path === '/cs-config') activeNav.value = '客服配置'
 else if (route.path === '/refund') activeNav.value = '退款申请'
 else if (route.path === '/order-lookup') activeNav.value = '查询订单'
+else if (route.path === '/consumption-records') activeNav.value = '消费记录'
 else if (route.path === '/embed-guide') activeNav.value = '嵌入指南'
 
 const displayActiveNav = computed(() => {
+  if (pendingNav.value) return pendingNav.value
   if (route.path === '/dashboard') return '首页'
   if (route.path === '/admin') return '权限管理'
   if (route.path === '/batch') return '批量下单'
@@ -130,6 +153,7 @@ const displayActiveNav = computed(() => {
   if (route.path === '/cs-config') return '客服配置'
   if (route.path === '/refund') return '退款申请'
   if (route.path === '/order-lookup') return '查询订单'
+  if (route.path === '/consumption-records') return '消费记录'
   if (route.path === '/embed-guide') return '嵌入指南'
   return activeNav.value
 })
@@ -192,34 +216,59 @@ function scrollActiveNavIntoView() {
 }
 
 function handleNav(nav) {
-  if (nav === '权限管理') { router.push('/admin'); return }
-  if (nav === '商品管理') { router.push('/products'); return }
-  if (nav === '批量下单') { router.push('/batch'); return }
-  if (nav === '记录中心') { router.push('/records'); return }
-  if (nav === '下单记录') { router.push('/my-orders'); return }
-  if (nav === '在线客服') { router.push('/support'); return }
-  if (nav === '聊天记录') { router.push('/chat-history'); return }
-  if (nav === '客服配置') { router.push('/cs-config'); return }
-  if (nav === '退款申请') { router.push('/refund'); return }
-  if (nav === '查询订单') { router.push('/order-lookup'); return }
-  if (nav === '嵌入指南') { router.push('/embed-guide'); return }
-  if (route.path !== '/dashboard') {
-    router.push('/dashboard')
+  const target = NAV_ROUTE_MAP[nav]
+  if (!target) return
+  if (route.path === target) {
+    activeNav.value = nav
     return
   }
-  activeNav.value = nav
+  pendingNav.value = nav
+  router.push(target).finally(() => {
+    if (pendingNav.value === nav) pendingNav.value = null
+  })
+}
+
+const ROUTE_CHUNK_PRELOADERS = [
+  () => import('./DashboardPage.vue'),
+  () => import('./BatchSubmitPage.vue'),
+  () => import('./RecordsPage.vue'),
+  () => import('./ConsumptionRecordsPage.vue'),
+  () => import('./OrderLookupPage.vue'),
+  () => import('./RefundManagePage.vue'),
+  () => import('./CustomerServicePage.vue'),
+  () => import('./ChatHistoryPage.vue'),
+  () => import('./CsConfigPage.vue'),
+  () => import('./EmbedGuidePage.vue'),
+  () => import('./AdminPage.vue'),
+  () => import('./ProductPage.vue')
+]
+
+function prefetchRouteChunks() {
+  const schedule = window.requestIdleCallback || ((cb) => window.setTimeout(cb, 300))
+  let index = 0
+  const runNext = () => {
+    if (index >= ROUTE_CHUNK_PRELOADERS.length) return
+    const load = ROUTE_CHUNK_PRELOADERS[index++]
+    load().finally(() => schedule(runNext))
+  }
+  schedule(runNext)
+  import('element-plus').catch(() => {})
 }
 
 const showMobileNav = ref(false)
 const showUserDrawer = ref(false)
 const isRegularUser = computed(() => !isAdmin.value && !isAgent.value && !isSupport.value)
-const mobileUserTabs = [
-  { key: 'home', label: '首页', nav: '首页', icon: House },
-  { key: 'orders', label: '记录', nav: '下单记录', icon: Tickets },
-  { key: 'batch', label: '下单', nav: '批量下单', icon: ShoppingCart, primary: true },
-  { key: 'lookup', label: '查询', nav: '查询订单', icon: Search },
-  { key: 'mine', label: '我的', action: 'profile', icon: UserFilled }
-]
+const mobileTabSides = {
+  left: [
+    { key: 'home', label: '首页', nav: '首页', icon: House },
+    { key: 'orders', label: '订单', nav: '下单记录', icon: Tickets }
+  ],
+  right: [
+    { key: 'consumption', label: '账单', nav: '消费记录', icon: Wallet },
+    { key: 'mine', label: '我的', action: 'profile', icon: UserFilled }
+  ]
+}
+const mobileOrderTab = { key: 'batch', label: '下单', nav: '批量下单', icon: ShoppingCart }
 const isAnyOverlayOpen = computed(() => showMobileNav.value || showUserDrawer.value || showRecharge.value || showTeam.value)
 let scrollLockState = null
 
@@ -472,6 +521,7 @@ const BALANCE_POLL_INTERVAL = 30_000
 
 onMounted(() => {
   fetchBalance()
+  prefetchRouteChunks()
   balancePollTimer.value = setInterval(fetchBalance, BALANCE_POLL_INTERVAL)
   document.addEventListener('fullscreenchange', onFullscreenChange)
   // 充值返回检测：
@@ -502,7 +552,9 @@ watch(isRegularUser, (active) => {
 }, { immediate: true })
 
 watch(() => route.path, () => {
+  pendingNav.value = null
   scrollActiveNavIntoView()
+  if (!isAnyOverlayOpen.value) unlockPageScroll()
 })
 
 watch(navs, () => {
@@ -581,7 +633,34 @@ provide('workspace', {
           <span /><span /><span />
         </button>
       </div>
-      <div class="ws-actions">
+      <div class="ws-actions" :class="{ 'ws-actions--client': isRegularUser }">
+        <template v-if="isRegularUser">
+          <button
+            type="button"
+            class="ws-client-lookup"
+            :class="{ active: displayActiveNav === '查询订单' }"
+            @click="handleNav('查询订单')"
+          >
+            <Search aria-hidden="true" />
+            <span>查询</span>
+          </button>
+          <div
+            class="balance-pill ws-client-balance"
+            role="button"
+            tabindex="0"
+            @click="openRecharge"
+            @keyup.enter="openRecharge"
+          >
+            <span class="balance-label">余额</span>
+            <strong class="balance-value">¥{{ balance.toFixed(2) }}</strong>
+            <span class="recharge-btn">充值</span>
+          </div>
+          <button type="button" class="avatar avatar-button ws-client-avatar" @click="showUserDrawer = true" title="用户中心">
+            <img v-if="userAvatar" :src="userAvatar" :alt="userName" class="avatar-img" />
+            <span v-else class="avatar-initial">{{ userInitial }}</span>
+          </button>
+        </template>
+        <template v-else>
         <div class="balance-pill" role="button" tabindex="0" @click="openRecharge" @keyup.enter="openRecharge">
           <span class="balance-label">余额</span>
           <strong class="balance-value">¥{{ balance.toFixed(2) }}</strong>
@@ -618,6 +697,7 @@ provide('workspace', {
           <span v-else class="avatar-initial">{{ userInitial }}</span>
         </button>
         </div>
+        </template>
       </div>
     </header>
 
@@ -719,15 +799,64 @@ provide('workspace', {
       </Transition>
     </Teleport>
 
-    <!-- 用户操作选项卡 手机端 用户 -->
-    <nav v-if="isRegularUser" class="mobile-user-tabbar" aria-label="Mobile navigation">
-      <button v-for="tab in mobileUserTabs" :key="tab.key" type="button"
-        :class="{ active: isMobileUserTabActive(tab), primary: tab.primary }" @click="handleMobileUserTab(tab)">
-        <span class="mobile-tab-icon">
-          <component :is="tab.icon" aria-hidden="true" />
-        </span>
-        <span>{{ tab.label }}</span>
+    <!-- 手机端底栏：凹槽 + 居中下单（参考镂空 TabBar） -->
+    <nav v-if="isRegularUser" class="mub-nav" aria-label="Mobile navigation">
+      <button
+        type="button"
+        class="mub-fab"
+        :class="{ active: isMobileUserTabActive(mobileOrderTab) }"
+        :aria-label="mobileOrderTab.label"
+        @click="handleMobileUserTab(mobileOrderTab)"
+      >
+        <component :is="mobileOrderTab.icon" aria-hidden="true" />
       </button>
+      <div class="mub-bar">
+        <svg
+          class="mub-bar-shape"
+          viewBox="0 0 375 56"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <path
+            d="M0,20 C0,8 8,0 20,0 H138 C148,0 155,3 160,11 C166,22 174,28 187.5,28 C201,28 209,22 215,11 C220,3 227,0 237,0 H355 C367,0 375,8 375,20 V56 H0 Z"
+          />
+        </svg>
+        <div class="mub-items">
+          <div class="mub-side">
+            <button
+              v-for="tab in mobileTabSides.left"
+              :key="tab.key"
+              type="button"
+              class="mub-tab"
+              :class="{ active: isMobileUserTabActive(tab) }"
+              :aria-label="tab.label"
+              @click="handleMobileUserTab(tab)"
+            >
+              <span class="mub-tab-icon" aria-hidden="true">
+                <component :is="tab.icon" />
+              </span>
+              <span class="mub-tab-label">{{ tab.label }}</span>
+            </button>
+          </div>
+          <div class="mub-notch-gap" aria-hidden="true"></div>
+          <div class="mub-side">
+            <button
+              v-for="tab in mobileTabSides.right"
+              :key="tab.key"
+              type="button"
+              class="mub-tab"
+              :class="{ active: isMobileUserTabActive(tab) }"
+              :aria-label="tab.label"
+              @click="handleMobileUserTab(tab)"
+            >
+              <span class="mub-tab-icon" aria-hidden="true">
+                <component :is="tab.icon" />
+              </span>
+              <span class="mub-tab-label">{{ tab.label }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
     </nav>
 
     <!-- 页面内容（顶栏 fixed，此处留出顶部高度） -->
@@ -813,6 +942,27 @@ provide('workspace', {
               </button>
             </div>
           </div>
+
+          <nav v-if="isRegularUser" class="ud-quick-nav">
+            <button
+              type="button"
+              class="ud-quick-item"
+              :class="{ active: displayActiveNav === '查询订单' }"
+              @click="showUserDrawer = false; handleNav('查询订单')"
+            >
+              <Search aria-hidden="true" />
+              <span>查询订单</span>
+            </button>
+            <button
+              type="button"
+              class="ud-quick-item"
+              :class="{ active: displayActiveNav === '消费记录' }"
+              @click="showUserDrawer = false; handleNav('消费记录')"
+            >
+              <Wallet aria-hidden="true" />
+              <span>消费记录</span>
+            </button>
+          </nav>
 
           <div class="ud-footer">
             <button
@@ -986,7 +1136,12 @@ provide('workspace', {
   z-index: 110;
 }
 
-.mobile-user-tabbar {
+.mobile-user-tabbar,
+.mub-nav {
+  display: none;
+}
+
+.ws-icon-btn {
   display: none;
 }
 
@@ -1134,6 +1289,11 @@ provide('workspace', {
   flex-shrink: 0;
 }
 
+/* 普通用户 PC：顶栏导航已有「查询订单」，不重复显示「查询」 */
+.workspace-layout.has-mobile-user-tabbar .ws-client-lookup {
+  display: none;
+}
+
 .ws-toolbar {
   display: inline-flex;
   align-items: center;
@@ -1266,15 +1426,17 @@ provide('workspace', {
 .recharge-btn {
   padding: 6px 14px;
   border-radius: 999px;
-  background: var(--ws-primary);
+  background: var(--goosd-primary);
   color: #fff;
   font-size: 12px;
   font-weight: 800;
-  transition: background var(--motion-fast) ease, transform var(--motion-fast) var(--motion-soft);
+  box-shadow: var(--goosd-btn-shadow);
+  transition: transform var(--motion-fast) var(--motion-soft), filter var(--motion-fast) ease, box-shadow var(--motion-fast) ease;
 }
 
 .recharge-btn:hover {
-  background: #2558d4;
+  background: var(--goosd-primary-dark);
+  box-shadow: var(--goosd-btn-shadow-hover);
 }
 
 .balance-pill:hover .recharge-btn {
@@ -1430,14 +1592,15 @@ provide('workspace', {
   color: #fff;
   font-size: 14px;
   font-weight: 700;
-  background: var(--ws-primary);
-  box-shadow: 0 8px 20px rgba(47, 109, 246, 0.28);
-  transition: transform 180ms ease, box-shadow 180ms ease;
+  background: var(--goosd-primary);
+  box-shadow: var(--goosd-btn-shadow);
+  transition: transform 180ms ease, box-shadow 180ms ease, filter 180ms ease;
 }
 
 .ud-recharge-btn:hover {
   transform: translateY(-1px);
-  box-shadow: 0 10px 24px rgba(47, 109, 246, 0.32);
+  background: var(--goosd-primary-dark);
+  box-shadow: var(--goosd-btn-shadow-hover);
 }
 
 .drawer-section {
@@ -1491,6 +1654,43 @@ provide('workspace', {
 .ud-status-ok {
   color: #16a34a;
   font-weight: 600;
+}
+
+.ud-quick-nav {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.ud-quick-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 72px;
+  padding: 10px 8px;
+  border-radius: 12px;
+  border: 1px solid #e8eef5;
+  background: #f8faff;
+  color: #647184;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.ud-quick-item svg {
+  width: 20px;
+  height: 20px;
+}
+
+.ud-quick-item.active,
+.ud-quick-item:hover {
+  color: #2f6df6;
+  border-color: #c7d7ff;
+  background: #f0f5ff;
 }
 
 .ud-footer {
@@ -1712,7 +1912,7 @@ provide('workspace', {
   align-items: center;
   gap: 5px;
   padding: 10px 18px;
-  background: linear-gradient(135deg, #8b7bf7, #5b8def);
+  background: #2f6df6;
   color: #fff;
   font-size: 13px;
   font-weight: 700;
@@ -2440,247 +2640,340 @@ provide('workspace', {
 
   .workspace-layout.has-mobile-user-tabbar .ws-topbar {
     top: 0;
+    display: flex;
     flex-direction: row;
     flex-wrap: nowrap;
     align-items: center;
-    padding: 0 12px;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 12px;
     min-height: var(--ws-topbar-h);
+    box-sizing: border-box;
   }
 
   .workspace-layout.has-mobile-user-tabbar .ws-topbar-start {
-    flex: 1;
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 42%;
     padding: 0;
     width: auto;
-  }
-
-  .workspace-layout.has-mobile-user-tabbar .ws-actions {
-    flex: 0 0 auto;
-    width: auto;
-    padding: 0;
-    border-top: none;
-    background: transparent;
     gap: 8px;
   }
 
-  .workspace-layout.has-mobile-user-tabbar .ws-actions .balance-pill {
+  .workspace-layout.has-mobile-user-tabbar .ws-brand {
     flex: 0 1 auto;
-    max-width: min(200px, calc(100vw - 120px));
-    padding: 6px 8px 6px 10px;
+    min-width: 0;
+    max-width: 100%;
   }
 
-  .workspace-layout.has-mobile-user-tabbar .ws-actions .balance-value {
-    font-size: 14px;
+  .workspace-layout.has-mobile-user-tabbar .ws-brand-mark {
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
   }
 
-  .workspace-layout.has-mobile-user-tabbar .ws-actions .recharge-btn {
-    padding: 6px 12px;
+  .workspace-layout.has-mobile-user-tabbar .ws-brand img {
+    width: 18px;
+    height: 18px;
   }
 
-  .workspace-layout.has-mobile-user-tabbar .ws-actions .avatar-button {
+  .workspace-layout.has-mobile-user-tabbar .ws-brand strong {
+    font-size: 15px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .workspace-layout.has-mobile-user-tabbar .ws-actions.ws-actions--client {
+    flex: 1 1 auto;
+    min-width: 0;
+    width: auto;
+    margin-left: 0;
+    padding: 0;
+    border-top: none;
+    background: transparent;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .workspace-layout.has-mobile-user-tabbar .ws-client-lookup {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    flex-shrink: 0;
+    height: 34px;
+    padding: 0 10px;
+    border: 1px solid #e8eef5;
+    border-radius: 10px;
+    background: #fff;
+    color: #647184;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+  }
+
+  .workspace-layout.has-mobile-user-tabbar .ws-client-lookup svg {
+    width: 16px;
+    height: 16px;
+    flex-shrink: 0;
+  }
+
+  .workspace-layout.has-mobile-user-tabbar .ws-client-lookup.active {
+    color: #2f6df6;
+    border-color: #c7d7ff;
+    background: #f0f5ff;
+  }
+
+  .workspace-layout.has-mobile-user-tabbar .ws-client-balance {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: none;
+    padding: 5px 6px 5px 10px;
+    gap: 6px;
+  }
+
+  .workspace-layout.has-mobile-user-tabbar .ws-client-balance .balance-value {
+    font-size: 13px;
+  }
+
+  .workspace-layout.has-mobile-user-tabbar .ws-client-balance .balance-label {
+    font-size: 10px;
+  }
+
+  .workspace-layout.has-mobile-user-tabbar .ws-client-balance .recharge-btn {
+    padding: 5px 10px;
+    font-size: 11px;
+  }
+
+  .workspace-layout.has-mobile-user-tabbar .ws-client-avatar {
+    flex-shrink: 0;
     width: 34px;
     height: 34px;
+    font-size: 14px;
+    border: 1px solid var(--ws-border);
+    background: #fff;
   }
 
   @media (max-width: 380px) {
-    .workspace-layout.has-mobile-user-tabbar .ws-brand strong {
-      max-width: 72px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+    .workspace-layout.has-mobile-user-tabbar .ws-topbar-start {
+      max-width: 36%;
     }
 
-    .workspace-layout.has-mobile-user-tabbar .ws-actions .balance-label {
+    .workspace-layout.has-mobile-user-tabbar .ws-brand strong {
+      font-size: 14px;
+    }
+
+    .workspace-layout.has-mobile-user-tabbar .ws-client-lookup span {
       display: none;
+    }
+
+    .workspace-layout.has-mobile-user-tabbar .ws-client-lookup {
+      width: 34px;
+      padding: 0;
+    }
+
+    .workspace-layout.has-mobile-user-tabbar .ws-client-balance .balance-label {
+      display: none;
+    }
+
+    .workspace-layout.has-mobile-user-tabbar .ws-client-balance .balance-value {
+      font-size: 12px;
     }
   }
 
   .workspace-layout.has-mobile-user-tabbar {
-    --mobile-user-tabbar-clearance: calc(92px + env(safe-area-inset-bottom, 0px));
-    padding-bottom: var(--mobile-user-tabbar-clearance);
+    --mub-nav-clearance: calc(92px + env(safe-area-inset-bottom, 0px));
+    --mobile-user-tabbar-clearance: var(--mub-nav-clearance);
+    padding-bottom: var(--mub-nav-clearance);
   }
 
-  .mobile-user-tabbar {
+  .mub-nav {
+    display: block;
     position: fixed;
-    left: 50%;
-    right: auto;
-    bottom: calc(11px + env(safe-area-inset-bottom, 0px));
-    z-index: 900;
-    width: min(calc(100vw - 16px), 450px);
-    height: 64px;
-    display: grid;
-    grid-template-columns:
-      repeat(2, minmax(62px, 82px))
-      minmax(74px, 88px)
-      repeat(2, minmax(62px, 82px));
-    align-items: center;
-    justify-content: center;
-    gap: 0;
-    padding: 7px 8px;
-    border: 1px solid rgba(255, 255, 255, 0.64);
-    border-radius: 18px;
-    background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(255, 255, 255, 0.72) 100%),
-      rgba(255, 255, 255, 0.64);
-    box-shadow:
-      0 -12px 36px rgba(15, 23, 42, 0.14),
-      inset 0 1px 0 rgba(255, 255, 255, 0.92);
-    backdrop-filter: blur(22px) saturate(1.25);
-    -webkit-backdrop-filter: blur(22px) saturate(1.25);
-    transform: translateX(-50%);
-    overflow: visible;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 1000;
+    padding-top: 24px;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    pointer-events: none;
+    isolation: isolate;
   }
 
-  .mobile-user-tabbar button {
+  .mub-bar {
+    position: relative;
+    height: 60px;
+    pointer-events: auto;
+  }
+
+  .mub-bar-shape {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    fill: #fff;
+    filter: drop-shadow(0 -4px 20px rgba(15, 23, 42, 0.08));
+  }
+
+  .mub-items {
     position: relative;
     z-index: 1;
+    display: flex;
+    align-items: flex-end;
+    height: 100%;
+    padding: 4px 8px 5px;
+  }
+
+  .mub-side {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-evenly;
     min-width: 0;
-    height: 50px;
+  }
+
+  .mub-notch-gap {
+    flex: 0 0 80px;
+    width: 80px;
+  }
+
+  .mub-tab {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     gap: 2px;
-    border: 1px solid transparent;
-    border-radius: 14px;
-    color: #728094;
-    font-size: 10.5px;
-    font-weight: 800;
-    line-height: 1;
-    transition: color var(--motion-fast) ease, background var(--motion-fast) ease, border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease, transform var(--motion-fast) ease;
-  }
-
-  .mobile-user-tabbar button:not(.primary) {
-    transform: translateY(-6px);
-  }
-
-  .mobile-user-tabbar button:not(.primary)::before {
-    content: '';
-    position: absolute;
-    left: 50%;
-    top: 2px;
-    width: 24px;
-    height: 3px;
-    border-radius: 999px;
+    min-width: 0;
+    flex: 1;
+    max-width: 72px;
+    height: 48px;
+    padding: 2px 4px;
+    border: none;
+    border-radius: 10px;
     background: transparent;
-    transform: translateX(-50%);
-    transition: background var(--motion-fast) ease, opacity var(--motion-fast) ease;
+    color: #8a95a8;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: color 160ms ease, background 160ms ease;
   }
 
-  .mobile-user-tabbar button:active {
-    transform: scale(0.96);
-  }
-
-  .mobile-user-tabbar button:not(.primary):active {
-    transform: translateY(-6px) scale(0.96);
-  }
-
-  .mobile-user-tabbar button.active {
-    color: #2f6df6;
-    border-color: transparent;
-    background: transparent;
-    box-shadow: none;
-  }
-
-  .mobile-user-tabbar button:not(.primary).active::before {
-    background: linear-gradient(90deg, #ec4f8b 0%, #2f6df6 100%);
-  }
-
-  .mobile-user-tabbar button.primary {
-    position: relative;
-    justify-self: center;
-    align-self: center;
-    width: 56px;
-    height: 56px;
-    color: #fff;
-    border-color: rgba(255, 255, 255, 0.9);
-    border-radius: 50%;
-    background: linear-gradient(135deg, #ec4f8b 0%, #2f6df6 100%);
-    box-shadow:
-      0 14px 24px rgba(47, 109, 246, 0.28),
-      0 6px 14px rgba(236, 79, 139, 0.18),
-      0 4px 10px rgba(15, 23, 42, 0.08),
-      inset 0 1px 0 rgba(255, 255, 255, 0.5);
-    transform: translateY(-16px);
-  }
-
-  .mobile-user-tabbar button.primary.active {
-    color: #fff;
-    border-color: rgba(255, 255, 255, 0.96);
-    background: linear-gradient(135deg, #ec4f8b 0%, #2f6df6 100%);
-    box-shadow:
-      0 16px 30px rgba(47, 109, 246, 0.34),
-      0 8px 18px rgba(236, 79, 139, 0.22),
-      0 5px 12px rgba(15, 23, 42, 0.1),
-      inset 0 1px 0 rgba(255, 255, 255, 0.52);
-  }
-
-  .mobile-user-tabbar button.primary:active {
-    transform: translateY(-16px) scale(0.96);
-  }
-
-  .mobile-tab-icon {
-    width: 22px;
-    height: 22px;
+  .mub-tab-icon {
     display: grid;
     place-items: center;
-  }
-
-  .mobile-tab-icon svg {
-    width: 21px;
-    height: 21px;
-    fill: currentColor;
-  }
-
-  .mobile-user-tabbar button.primary .mobile-tab-icon {
     width: 24px;
     height: 24px;
+    flex-shrink: 0;
   }
 
-  .mobile-user-tabbar button.primary .mobile-tab-icon svg {
-    width: 23px;
-    height: 23px;
+  .mub-tab-icon svg {
+    width: 20px;
+    height: 20px;
   }
 
-  .mobile-user-tabbar button.primary span:last-child {
-    margin-top: -1px;
-    color: rgba(255, 255, 255, 0.96);
+  .mub-tab-label {
     font-size: 10px;
+    font-weight: 600;
+    line-height: 1;
+    white-space: nowrap;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  .mobile-user-tabbar::after {
-    content: '';
+  .mub-tab.active {
+    color: #2f6df6;
+    background: rgba(47, 109, 246, 0.08);
+  }
+
+  .mub-tab.active .mub-tab-label {
+    color: #2f6df6;
+    font-weight: 700;
+  }
+
+  .mub-tab:active {
+    opacity: 0.75;
+  }
+
+  .mub-fab {
+    pointer-events: auto;
     position: absolute;
     left: 50%;
-    bottom: 5px;
-    width: 74px;
-    height: 3px;
-    border-radius: 999px;
-    background: linear-gradient(90deg, rgba(236, 79, 139, 0.18), rgba(47, 109, 246, 0.2));
+    top: -4px;
+    z-index: 2;
     transform: translateX(-50%);
+    width: 54px;
+    height: 54px;
+    display: grid;
+    place-items: center;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    color: #fff;
+    background: linear-gradient(160deg, #42a0ff 0%, #2f6df6 45%, #1a52d4 100%);
+    /* box-shadow:
+      0 10px 28px rgba(47, 109, 246, 0.45),
+      0 4px 12px rgba(15, 23, 42, 0.12); */
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 200ms ease;
+  }
+
+  .mub-fab svg {
+    width: 26px;
+    height: 26px;
+  }
+
+  .mub-fab.active {
+    box-shadow:
+      0 12px 32px rgba(47, 109, 246, 0.5),
+      0 0 0 4px rgba(47, 109, 246, 0.15);
+  }
+
+  .mub-fab:active {
+    transform: translateX(-50%) scale(0.94);
   }
 
   @media (max-width: 360px) {
-    .mobile-user-tabbar {
-      width: calc(100vw - 16px);
-      padding-inline: 7px;
-      grid-template-columns:
-        repeat(2, minmax(44px, 1fr))
-        minmax(64px, 74px)
-        repeat(2, minmax(44px, 1fr));
+    .mub-nav {
+      padding-top: 22px;
     }
 
-    .mobile-user-tabbar button {
-      font-size: 10px;
+    .mub-bar {
+      height: 56px;
     }
 
-    .mobile-user-tabbar button.primary {
-      width: 54px;
-      height: 54px;
+    .mub-notch-gap {
+      flex: 0 0 72px;
+      width: 72px;
+    }
+
+    .mub-fab {
+      width: 50px;
+      height: 50px;
+    }
+
+    .mub-fab svg {
+      width: 24px;
+      height: 24px;
+    }
+
+    .mub-tab {
+      max-width: 64px;
+      height: 44px;
+    }
+
+    .mub-tab-label {
+      font-size: 9px;
     }
   }
 
   :global(body.has-mobile-user-tabbar .chat-fab) {
-    bottom: calc(98px + env(safe-area-inset-bottom, 0px)) !important;
+    bottom: calc(96px + env(safe-area-inset-bottom, 0px)) !important;
   }
 
   .mobile-query-fab {

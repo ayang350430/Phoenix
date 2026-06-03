@@ -7,7 +7,7 @@ import 'element-plus/es/components/form-item/style/css'
 import 'element-plus/es/components/input/style/css'
 import 'element-plus/es/components/icon/style/css'
 import 'element-plus/es/components/checkbox/style/css'
-import { ArrowRight, Hide, Lock, Message, User, View } from '@element-plus/icons-vue'
+import { ArrowRight, Hide, Lock, Message, Select, Ticket, User, View } from '@element-plus/icons-vue'
 import { useI18n } from '../i18n'
 import logoSvg from '../assets/logo.svg'
 import bannerImg from '../assets/banner.png'
@@ -26,6 +26,7 @@ const remember = ref(false)
 const regUsername = ref('')
 const regPassword = ref('')
 const regConfirm = ref('')
+const regInvite = ref('')
 const regLoading = ref(false)
 const regError = ref('')
 const sliderRef = ref(null)
@@ -151,8 +152,10 @@ const sliderMax = computed(() => {
 })
 
 const sliderProgress = computed(() => {
-  if (verified.value) return '100%'
-  return `${sliderOffset.value + handleWidth}px`
+  const trackWidth = sliderRef.value?.clientWidth || 0
+  if (verified.value || trackWidth <= 0) return '100%'
+  const filled = sliderOffset.value + handleWidth
+  return `${Math.min(100, (filled / trackWidth) * 100)}%`
 })
 
 function clamp(value, min, max) {
@@ -264,12 +267,15 @@ async function handleRegister() {
   if (!regUsername.value) { regError.value = '请输入用户名'; return }
   if (!regPassword.value || regPassword.value.length < 6) { regError.value = '密码至少 6 位'; return }
   if (regPassword.value !== regConfirm.value) { regError.value = '两次输入的密码不一致'; return }
+  if (!regInvite.value.trim()) { regError.value = '请输入邀请码'; return }
 
   regLoading.value = true
   try {
-    const body = { username: regUsername.value, password: regPassword.value }
-    const refCode = getRefCode()
-    if (refCode) body.ref = refCode
+    const body = {
+      username: regUsername.value,
+      password: regPassword.value,
+      ref: regInvite.value.trim()
+    }
 
     const res = await fetch('/api/auth/register', {
       method: 'POST',
@@ -298,6 +304,9 @@ async function handleRegister() {
     loginUsername.value = saved
     remember.value = true
   }
+  // 邀请链接 ?ref=XXXX 时预填邀请码
+  const refCode = getRefCode()
+  if (refCode) regInvite.value = refCode
 })()
 
 onBeforeUnmount(() => {
@@ -376,8 +385,9 @@ onBeforeUnmount(() => {
               tabindex="0"
               @dblclick="resetSlider"
             >
-              <div class="slider-fill" :style="{ width: sliderProgress }"></div>
+              <div class="slider-fill" :style="{ width: sliderProgress }" />
               <button
+                v-if="!verified"
                 type="button"
                 class="slider-handle"
                 :style="{ transform: `translateX(${sliderOffset}px)` }"
@@ -386,7 +396,10 @@ onBeforeUnmount(() => {
               >
                 <el-icon><ArrowRight /></el-icon>
               </button>
-              <strong>{{ verified ? t('login.sliderDone') : t('login.slider') }}</strong>
+              <strong class="slider-label">
+                <el-icon v-if="verified" class="slider-done-icon"><Select /></el-icon>
+                {{ verified ? t('login.sliderDone') : t('login.slider') }}
+              </strong>
             </div>
 
             <div class="form-row">
@@ -532,9 +545,16 @@ onBeforeUnmount(() => {
               </el-input>
             </el-form-item>
             <el-form-item label="确认密码">
-              <el-input v-model="regConfirm" type="password" placeholder="请再次输入密码" size="large" show-password @keyup.enter="handleRegister">
+              <el-input v-model="regConfirm" type="password" placeholder="请再次输入密码" size="large" show-password>
                 <template #prefix>
                   <el-icon><Lock /></el-icon>
+                </template>
+              </el-input>
+            </el-form-item>
+            <el-form-item label="邀请码">
+              <el-input v-model="regInvite" placeholder="请输入邀请码（必填）" size="large" @keyup.enter="handleRegister">
+                <template #prefix>
+                  <el-icon><Ticket /></el-icon>
                 </template>
               </el-input>
             </el-form-item>
@@ -554,13 +574,13 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .login-page {
-  --el-color-primary: #ee4d7a;
-  --el-color-primary-light-3: #f37598;
-  --el-color-primary-light-5: #f59ab3;
-  --el-color-primary-light-7: #f9c0d0;
-  --el-color-primary-light-8: #fbd5df;
-  --el-color-primary-light-9: #fdebf0;
-  --el-color-primary-dark-2: #c93662;
+  --el-color-primary: #2f6df6;
+  --el-color-primary-light-3: #5a8ef8;
+  --el-color-primary-light-5: #8baffa;
+  --el-color-primary-light-7: #b8cffc;
+  --el-color-primary-light-8: #d4e2fd;
+  --el-color-primary-light-9: #eef3ff;
+  --el-color-primary-dark-2: #2558d4;
   min-height: 100vh;
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(420px, 0.9fr);
@@ -627,7 +647,7 @@ onBeforeUnmount(() => {
   min-height: 100vh;
   padding: 120px 56px 80px;
   background:
-    linear-gradient(135deg, rgba(255, 238, 244, 0.78), rgba(235, 245, 255, 0.96)),
+    linear-gradient(135deg, rgba(238, 245, 255, 0.9), rgba(242, 248, 255, 0.98)),
     #f2f7fd;
 }
 
@@ -714,7 +734,7 @@ onBeforeUnmount(() => {
 }
 
 .login-form :deep(.el-input__wrapper.is-focus) {
-  box-shadow: 0 0 0 1px #8b7bf7 inset, 0 0 0 4px rgba(139, 123, 247, 0.12);
+  box-shadow: 0 0 0 1px #2f6df6 inset, 0 0 0 4px rgba(47, 109, 246, 0.12);
 }
 
 .password-toggle {
@@ -731,14 +751,16 @@ onBeforeUnmount(() => {
   overflow: hidden;
   background: #f4f7fb;
   user-select: none;
+  touch-action: none;
 }
 
 .slider-fill {
   position: absolute;
   inset: 0 auto 0 0;
   width: 48px;
-  background: linear-gradient(135deg, #ee4d7a, #8b7bf7 58%, #5b8def);
-  transition: width 0.2s;
+  background: linear-gradient(90deg, #5a8ef8 0%, #2f6df6 100%);
+  transition: width 0.22s ease;
+  pointer-events: none;
 }
 
 .slider-handle {
@@ -747,29 +769,41 @@ onBeforeUnmount(() => {
   top: 0;
   z-index: 2;
   width: 48px;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-right: 1px solid rgba(21, 32, 51, 0.06);
+  border-radius: 7px 0 0 7px;
   background: #fff;
-  box-shadow: 0 8px 20px rgba(21, 32, 51, 0.12);
-  color: #8b7bf7;
+  box-shadow: 0 4px 14px rgba(21, 32, 51, 0.1);
+  color: #2f6df6;
   font-size: 18px;
-  transition: transform 0.2s;
+  transition: transform 0.22s ease;
   cursor: grab;
+  box-sizing: border-box;
 }
 
 .slider-handle,
-.slider-check strong {
-  height: 100%;
+.slider-label {
   display: grid;
   place-items: center;
 }
 
-.slider-check strong {
+.slider-label {
   position: relative;
   z-index: 1;
   height: 100%;
   text-align: center;
   color: #425066;
   font-size: 13px;
+  font-weight: 600;
   pointer-events: none;
+}
+
+.slider-done-icon {
+  margin-right: 4px;
+  font-size: 14px;
 }
 
 .slider-check.dragging .slider-fill,
@@ -782,16 +816,23 @@ onBeforeUnmount(() => {
 }
 
 .slider-check.verified {
-  border-color: rgba(22, 129, 90, 0.32);
-  background: #eefaf4;
+  border-color: rgba(16, 185, 129, 0.35);
+  background: linear-gradient(135deg, #10b981, #059669);
 }
 
 .slider-check.verified .slider-fill {
-  background: linear-gradient(135deg, #44d083, #35b978);
+  width: 100% !important;
+  background: transparent;
 }
 
-.slider-check.verified .slider-handle {
-  color: #16815a;
+.slider-check.verified .slider-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: 0.02em;
 }
 
 .form-row {
@@ -804,7 +845,7 @@ onBeforeUnmount(() => {
 }
 
 .text-link {
-  color: #ee4d7a;
+  color: #2f6df6;
   font-weight: 700;
 }
 
@@ -816,15 +857,24 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 46px;
   border-radius: 8px;
-  background: linear-gradient(135deg, #ee4d7a, #8b7bf7 54%, #5b8def);
-  border: none;
+  background: #2f6df6 !important;
+  border-color: #2f6df6 !important;
   color: #fff;
   font-weight: 800;
-  box-shadow: 0 14px 30px rgba(139, 123, 247, 0.24);
+  box-shadow: 0 8px 22px rgba(47, 109, 246, 0.28);
+}
+
+.login-form :deep(.login-submit.el-button--primary) {
+  --el-button-bg-color: #2f6df6;
+  --el-button-border-color: #2f6df6;
+  --el-button-hover-bg-color: #2558d4;
+  --el-button-hover-border-color: #2558d4;
+  --el-button-active-bg-color: #2558d4;
+  --el-button-active-border-color: #2558d4;
 }
 
 .error-text {
-  color: #ee4d7a;
+  color: #e85d5d;
   font-size: 13px;
   margin: 0 0 8px;
 }
@@ -867,7 +917,7 @@ onBeforeUnmount(() => {
     display: block;
     min-height: 100vh;
     background:
-      linear-gradient(135deg, rgba(255, 238, 244, 0.82), rgba(242, 248, 255, 0.95)),
+      linear-gradient(135deg, rgba(238, 245, 255, 0.92), rgba(242, 248, 255, 0.98)),
       #fff;
   }
 

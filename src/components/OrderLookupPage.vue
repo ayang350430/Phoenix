@@ -416,10 +416,10 @@ function exportCSV() {
 .lookup-btn.reset { background: #f4f7fb; color: #647184; }
 .lookup-btn.reset:hover { background: #edf1f6; }
 .lookup-btn.search {
-  background: linear-gradient(135deg, #8b7bf7, #5b8def); color: #fff;
-  box-shadow: 0 4px 14px rgba(139,123,247,.2);
+  background: #2f6df6; color: #fff;
+  box-shadow: 0 4px 14px rgba(47, 109, 246, 0.22);
 }
-.lookup-btn.search:hover { transform: translateY(-1px); box-shadow: 0 6px 18px rgba(139,123,247,.3); }
+.lookup-btn.search:hover { transform: translateY(-1px); background: #2558d4; box-shadow: 0 6px 18px rgba(47, 109, 246, 0.28); }
 .lookup-btn.search:disabled { opacity: .6; pointer-events: none; }
 .spin-icon-sm {
   display: inline-block; width: 14px; height: 14px;
@@ -724,13 +724,49 @@ function exportCSV() {
 .toast-slide-leave-to { opacity: 0; transform: translate(-50%, -20px); }
 
 @media (max-width: 760px) {
-  .lookup-page { padding: 12px 12px 24px; }
-  .lookup-header { gap: 12px; }
-  .lookup-header-icon { width: 40px; height: 40px; }
-  .lookup-header-icon svg { width: 20px; height: 20px; }
-  .lookup-header h2 { font-size: 17px; }
-  .lookup-card { padding: 16px; }
-  .lookup-input-area { padding: 14px; }
+  .lookup-page { padding: 10px 10px 24px; }
+  .lookup-header {
+    gap: 10px;
+    margin-bottom: 12px;
+    align-items: flex-start;
+  }
+  .lookup-header-icon { width: 36px; height: 36px; border-radius: 12px; }
+  .lookup-header-icon svg { width: 18px; height: 18px; }
+  .lookup-header h2 {
+    font-size: 15px;
+    font-weight: 800;
+    line-height: 1.25;
+  }
+  .lookup-header p {
+    font-size: 12px;
+    line-height: 1.45;
+    margin-top: 2px;
+  }
+  .lookup-card { padding: 12px; border-radius: 12px; }
+  .lookup-input-area { padding: 12px; }
+  .lookup-label {
+    font-size: 12px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    line-height: 1.4;
+  }
+  .lookup-textarea {
+    font-size: 12px;
+    line-height: 1.55;
+    padding: 10px 12px;
+    min-height: 100px;
+  }
+  .lookup-textarea::placeholder {
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .lookup-hint { font-size: 11px; }
+  .lookup-btn {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 7px 14px;
+    height: 32px;
+  }
   .lookup-bar { flex-direction: column; align-items: flex-end; gap: 8px; }
   .oc-metrics,
   .oc-metrics:has(.oc-metric-id) {

@@ -131,21 +131,48 @@ const Task = {
 
   // ========== 订单 ==========
 
-  async listOrders({ userIds, page = 1, pageSize = 20, batch_id, order_status, target_type }) {
+  async listOrders({ userIds, page = 1, pageSize = 20, batch_id, order_status, target_type, order_no, start, end }) {
     const offset = (page - 1) * pageSize
+
+    // 每个订单的实付金额（下单扣费）
+    const chargeSummary = db('account_records')
+      .where('record_type', 'order_charge')
+      .select('order_id')
+      .max('actual_paid_amount as actual_paid_amount')
+      .groupBy('order_id')
+
     const query = db('orders')
       .leftJoin('products', 'products.id', 'orders.product_id')
+      .leftJoin('order_batches', 'order_batches.id', 'orders.batch_id')
+      .leftJoin(chargeSummary.as('charge'), 'charge.order_id', 'orders.id')
     applyUserFilter(query, userIds, 'orders.user_id')
     if (batch_id) query.andWhere('orders.batch_id', batch_id)
     if (order_status) query.andWhere('orders.order_status', order_status)
     if (target_type) query.andWhere('orders.target_type', target_type)
+    if (order_no) query.andWhere('orders.order_no', 'like', `%${order_no}%`)
+    if (start) query.andWhere('orders.created_at', '>=', `${start} 00:00:00`)
+    if (end) query.andWhere('orders.created_at', '<=', `${end} 23:59:59`)
 
     const rows = await query.clone()
-      .select('orders.*', 'products.name as product_name')
+      .select(
+        'orders.*',
+        'products.name as product_name',
+        'products.api_endpoint as product_api_endpoint',
+        'order_batches.batch_no',
+        'charge.actual_paid_amount'
+      )
       .orderBy('orders.created_at', 'desc')
       .limit(pageSize).offset(offset)
-    const [{ total }] = await query.clone().count('orders.id as total')
-    return { rows, total }
+    const [{ total }] = await query.clone().countDistinct('orders.id as total')
+
+    const data = rows.map(o => ({
+      ...o,
+      has_upstream: !!o.product_api_endpoint,
+      progress: o.ordered_quantity > 0
+        ? Math.min(100, Math.round((o.completed_quantity || 0) / o.ordered_quantity * 100))
+        : 0
+    }))
+    return { rows: data, total: Number(total) || 0 }
   },
 
   async getOrder(id) {
@@ -186,17 +213,32 @@ const Task = {
 
   // ========== 账务记录 ==========
 
-  async listAccountRecords({ userIds, page = 1, pageSize = 20, record_type, direction }) {
+  async listAccountRecords({ userIds, page = 1, pageSize = 20, record_type, direction, start, end, order_no }) {
     const offset = (page - 1) * pageSize
-    const query = db('account_records')
-    applyUserFilter(query, userIds)
-    if (record_type) query.andWhere({ record_type })
-    if (direction) query.andWhere({ direction })
+    const base = () => {
+      const query = db('account_records as ar')
+        .leftJoin('users as u', 'u.id', 'ar.user_id')
+      applyUserFilter(query, userIds, 'ar.user_id')
+      if (record_type) query.andWhere('ar.record_type', record_type)
+      if (direction) query.andWhere('ar.direction', direction)
+      if (order_no) query.andWhere('ar.order_no', 'like', `%${order_no}%`)
+      if (start) query.andWhere('ar.created_at', '>=', start)
+      if (end) {
+        const endDt = new Date(end)
+        if (!Number.isNaN(endDt.getTime())) {
+          endDt.setHours(23, 59, 59, 999)
+          query.andWhere('ar.created_at', '<=', endDt)
+        }
+      }
+      return query
+    }
 
-    const rows = await query.clone()
-      .orderBy('created_at', 'desc')
+    const rows = await base()
+      .clone()
+      .select('ar.*', 'u.username', 'u.nickname', 'u.real_name')
+      .orderBy('ar.created_at', 'desc')
       .limit(pageSize).offset(offset)
-    const [{ total }] = await query.clone().count('id as total')
+    const [{ total }] = await base().clone().count('ar.id as total')
     return { rows, total }
   },
 

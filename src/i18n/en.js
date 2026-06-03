@@ -36,7 +36,13 @@ export default {
       { title: 'Validation and cleanup', text: 'Run manual validation before submission, remove problematic links in one click, and keep order records visible.' }
     ],
     workflowTitle: 'From paste to order in one pass',
-    workflow: ['Paste links and counts', 'Choose task mode', 'Validate manually', 'Confirm submission'],
+    workflowLead: 'Four focused steps from input to order, with fewer format mistakes.',
+    workflow: [
+      { title: 'Paste links and counts', hint: 'One row per link, split by space or Tab' },
+      { title: 'Choose task mode', hint: 'Switch read, like, or exposure instantly' },
+      { title: 'Validate manually', hint: 'Check format and flagged rows before submit' },
+      { title: 'Confirm submission', hint: 'Batch confirm once validation passes' }
+    ],
     ctaTitle: 'Need to submit read, like, or exposure tasks in bulk?',
     ctaText: 'Prepare links and quantities, choose the task mode, validate the rows, then confirm the order.',
     ctaBtn: 'Submit tasks'

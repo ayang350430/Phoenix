@@ -88,7 +88,16 @@ router.post('/register', validate({ body: ['username', 'password'] }), async (re
     if (exists) {
       return res.status(409).json({ code: 409, message: '用户名已存在' })
     }
-    const user = await User.create({ username, password, real_name, nickname, refCode })
+    // 邀请码必填且必须有效，否则不允许注册
+    const code = (refCode || '').trim()
+    if (!code) {
+      return res.status(400).json({ code: 400, message: '请输入邀请码' })
+    }
+    const inviter = await User.findByReferralCode(code)
+    if (!inviter) {
+      return res.status(400).json({ code: 400, message: '邀请码无效' })
+    }
+    const user = await User.create({ username, password, real_name, nickname, refCode: code })
 
     // 注册奖励：如果该用户有上级代理且代理配置了注册奖励，自动发放
     if (user.referred_by) {

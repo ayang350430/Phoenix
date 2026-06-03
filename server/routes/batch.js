@@ -9,6 +9,7 @@ import { cancelTask } from '../services/xhsApi.js'
 import { filterLookupOrders } from '../services/orderLookupPolicy.js'
 import { creditAgentCommission, clawbackAgentCommission } from '../services/agentCommission.js'
 import { refreshBatchStatus } from '../services/batchStatus.js'
+import { calcRefundAmount } from '../utils/refundAmount.js'
 import db from '../db.js'
 
 const router = Router()
@@ -711,7 +712,7 @@ router.post('/:id/refund', authRequired, async (req, res) => {
           const refundQty = Math.max(0, orderedQty - (order.completed_quantity || 0))
           if (refundQty === 0) continue
 
-          const refundAmount = Math.round(refundQty * unitPrice * 10000) / 10000
+          const refundAmount = calcRefundAmount(chargeRec, refundQty, orderedQty)
 
           await trx('orders').where({ id: order.id }).update({
             order_status: 'refunded', refunded_quantity: refundQty, updated_at: now
@@ -778,9 +779,8 @@ router.post('/:id/refund', authRequired, async (req, res) => {
       const chargeRec = await db('account_records')
         .where({ order_id: order.id, record_type: 'order_charge' }).first()
       if (!chargeRec) continue
-      const unitPrice = parseFloat(chargeRec.original_unit_price) || 0
       const refundQty = Math.max(0, (order.ordered_quantity || 0) - (order.completed_quantity || 0))
-      estimatedRefund += Math.round(refundQty * unitPrice * 10000) / 10000
+      estimatedRefund += calcRefundAmount(chargeRec, refundQty, order.ordered_quantity || 0)
     }
 
     if (estimatedRefund <= 0) {
@@ -837,7 +837,7 @@ router.post('/orders/:id/refund', authRequired, async (req, res) => {
       .where({ order_id: orderId, record_type: 'order_charge' }).first()
     const unitPrice = parseFloat(chargeRec?.original_unit_price) || 0
     const refundQty = Math.max(0, (order.ordered_quantity || 0) - (order.completed_quantity || 0))
-    const refundAmount = Math.round(refundQty * unitPrice * 10000) / 10000
+    const refundAmount = calcRefundAmount(chargeRec, refundQty, order.ordered_quantity || 0)
 
     if (refundAmount <= 0) {
       return res.status(400).json({ code: 400, message: '没有可退款金额' })

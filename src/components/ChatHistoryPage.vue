@@ -1,6 +1,9 @@
 <script setup>
 import { ref, computed, onMounted, inject, nextTick } from 'vue'
 import { ElPagination, ElSelect, ElOption } from 'element-plus'
+import 'element-plus/es/components/pagination/style/css'
+import 'element-plus/es/components/select/style/css'
+import 'element-plus/es/components/option/style/css'
 
 const { getToken, isAdmin } = inject('workspace')
 
@@ -45,9 +48,29 @@ function fmtShortTime(dt) {
 }
 
 function statusInfo(s) {
-  if (s === 'open') return { label: '进行中', color: '#42c978', bg: '#edfbf3', border: '#b7ebc9' }
-  if (s === 'closed') return { label: '已结束', color: '#9aa5b5', bg: '#f6f8fc', border: '#e0e4ea' }
-  return { label: s || '未知', color: '#9aa5b5', bg: '#f6f8fc', border: '#e0e4ea' }
+  if (s === 'open') return { label: '进行中', color: '#16a34a', bg: '#ecfdf5', border: '#bbf7d0' }
+  if (s === 'closed') return { label: '已结束', color: '#64748b', bg: '#f8fafc', border: '#e2e8f0' }
+  return { label: s || '未知', color: '#64748b', bg: '#f8fafc', border: '#e2e8f0' }
+}
+
+function formatLastMessage(msg) {
+  if (!msg) return '暂无消息'
+  const text = String(msg).trim()
+  if (!text) return '暂无消息'
+  if (text === '[图片]' || text.startsWith('data:image')) return '图片消息'
+  if (text === '[语音]' || text.startsWith('data:audio') || text.includes('data:audio/')) return '语音消息'
+  if (text.startsWith('data:')) return '媒体消息'
+  if (text.length > 72) return `${text.slice(0, 72)}…`
+  return text
+}
+
+function lastMessageKind(msg) {
+  if (!msg) return 'empty'
+  const text = String(msg).trim()
+  if (text === '[图片]' || text.startsWith('data:image')) return 'image'
+  if (text === '[语音]' || text.startsWith('data:audio') || text.includes('data:audio/')) return 'audio'
+  if (text.startsWith('data:')) return 'media'
+  return 'text'
 }
 
 async function fetchConversations() {
@@ -117,7 +140,7 @@ onMounted(() => { fetchConversations() })
   <div class="chat-history-page">
     <!-- 顶部统计卡片 -->
     <div class="stats-row">
-      <div class="stat-card">
+      <div class="stat-card stat-card--total">
         <div class="stat-icon icon-total">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
             stroke-linecap="round" stroke-linejoin="round">
@@ -129,7 +152,7 @@ onMounted(() => { fetchConversations() })
           <strong class="stat-value">{{ total }}</strong>
         </div>
       </div>
-      <div class="stat-card">
+      <div class="stat-card stat-card--open">
         <div class="stat-icon icon-open">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
             stroke-linecap="round" stroke-linejoin="round">
@@ -156,15 +179,17 @@ onMounted(() => { fetchConversations() })
           </svg>
           <input v-model="searchKey" placeholder="搜索用户名 / 消息内容" class="filter-input" @keyup.enter="doSearch" />
         </div>
-        <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 130px" @change="doSearch">
+        <el-select v-model="filterStatus" placeholder="全部状态" clearable class="filter-select" @change="doSearch">
           <el-option label="全部状态" value="" />
           <el-option label="进行中" value="open" />
           <el-option label="已结束" value="closed" />
         </el-select>
-        <button type="button" class="btn-search" @click="doSearch">搜索</button>
-        <button type="button" class="btn-reset" @click="resetSearch">重置</button>
+        <div class="filter-actions">
+          <button type="button" class="btn-search" @click="doSearch">搜索</button>
+          <button type="button" class="btn-reset" @click="resetSearch">重置</button>
+        </div>
       </div>
-      <span class="filter-total">共 {{ total }} 条会话</span>
+      <span class="filter-total">共 <strong>{{ total }}</strong> 条会话</span>
     </div>
 
     <!-- 会话列表 -->
@@ -175,32 +200,48 @@ onMounted(() => { fetchConversations() })
       </div>
       <template v-else-if="conversations.length">
         <div v-for="conv in conversations" :key="conv.id" class="conv-card" @click="openDrawer(conv)">
-          <div class="conv-left">
-            <div class="conv-avatar">
-              <span>{{ (displayName(conv) || '用')[0] }}</span>
-            </div>
+          <div class="conv-avatar">
+            <span>{{ (displayName(conv) || '用')[0] }}</span>
           </div>
-          <div class="conv-center">
-            <div class="conv-head">
-              <span class="conv-name">{{ displayName(conv) }}</span>
-              <span class="conv-status-pill"
-                :style="{ color: statusInfo(conv.status).color, background: statusInfo(conv.status).bg, borderColor: statusInfo(conv.status).border }">{{
-                  statusInfo(conv.status).label }}</span>
+          <div class="conv-body">
+            <div class="conv-top">
+              <div class="conv-head">
+                <span class="conv-name">{{ displayName(conv) }}</span>
+                <span
+                  class="conv-status-pill"
+                  :style="{
+                    color: statusInfo(conv.status).color,
+                    background: statusInfo(conv.status).bg,
+                    borderColor: statusInfo(conv.status).border
+                  }"
+                >{{ statusInfo(conv.status).label }}</span>
+              </div>
+              <time class="conv-time">{{ fmtShortTime(conv.last_message_at) }}</time>
             </div>
-            <div class="conv-last-msg">{{ conv.last_message || '暂无消息' }}</div>
-            <div class="conv-meta">
-              <span class="meta-item">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="10" />
-                  <polyline points="12 6 12 12 16 14" />
+            <div class="conv-preview" :class="`conv-preview--${lastMessageKind(conv.last_message)}`">
+              <span class="conv-preview-icon" aria-hidden="true">
+                <svg v-if="lastMessageKind(conv.last_message) === 'image'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="3" width="18" height="18" rx="2" />
+                  <circle cx="8.5" cy="8.5" r="1.5" />
+                  <path d="m21 15-5-5L5 21" />
                 </svg>
-                {{ fmtShortTime(conv.last_message_at) }}
+                <svg v-else-if="lastMessageKind(conv.last_message) === 'audio'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                  <line x1="12" y1="19" x2="12" y2="23" />
+                  <line x1="8" y1="23" x2="16" y2="23" />
+                </svg>
+                <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                </svg>
               </span>
-              <span class="meta-dot"></span>
-              <span class="meta-item">{{ conv.msg_count || 0 }} 条消息</span>
+              <span class="conv-last-msg">{{ formatLastMessage(conv.last_message) }}</span>
+            </div>
+            <div class="conv-meta">
+              <span class="meta-chip">{{ conv.msg_count || 0 }} 条消息</span>
             </div>
           </div>
-          <div class="conv-right">
+          <div class="conv-action" aria-hidden="true">
             <svg class="conv-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="9 18 15 12 9 6" />
@@ -328,35 +369,60 @@ onMounted(() => { fetchConversations() })
 
 <style scoped>
 .chat-history-page {
-  max-width: 960px;
+  --ch-primary: #2f6df6;
+  --ch-ink: #152033;
+  --ch-muted: #64748b;
+  --ch-line: rgba(21, 32, 51, 0.08);
+  max-width: 1080px;
   margin: 0 auto;
-  padding: 0 16px 60px;
+  padding: 0 20px 60px;
 }
 
 /* ========== 统计卡片 ========== */
 .stats-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   margin-top: 20px;
   margin-bottom: 20px;
 }
 
 .stat-card {
-  flex: 1;
+  position: relative;
+  overflow: hidden;
   background: #fff;
-  border-radius: 16px;
-  padding: 20px 24px;
+  border-radius: 18px;
+  padding: 22px 24px;
   display: flex;
   align-items: center;
   gap: 16px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, .04);
-  border: 1px solid rgba(0, 0, 0, .03);
+  box-shadow: 0 10px 32px rgba(21, 32, 51, 0.05);
+  border: 1px solid var(--ch-line);
+}
+
+.stat-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 24px;
+  right: 24px;
+  height: 3px;
+  border-radius: 999px;
+  opacity: 0.9;
+}
+
+.stat-card--total::before {
+  background: linear-gradient(90deg, var(--ch-primary), #8b7bf7);
+}
+
+.stat-card--open::before {
+  background: linear-gradient(90deg, #34d399, #10b981);
 }
 
 .stat-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
+  width: 50px;
+  height: 50px;
+  border-radius: 15px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -364,35 +430,40 @@ onMounted(() => { fetchConversations() })
 }
 
 .icon-total {
-  background: linear-gradient(135deg, #eef3ff, #e0e8ff);
-  color: #5b8def;
+  background: linear-gradient(145deg, rgba(47, 109, 246, 0.14), rgba(47, 109, 246, 0.05));
+  color: var(--ch-primary);
+  border: 1px solid rgba(47, 109, 246, 0.1);
 }
 
 .icon-open {
-  background: linear-gradient(135deg, #edfbf3, #d4f5e2);
-  color: #42c978;
+  background: linear-gradient(145deg, rgba(16, 185, 129, 0.14), rgba(16, 185, 129, 0.05));
+  color: #10b981;
+  border: 1px solid rgba(16, 185, 129, 0.12);
 }
 
 .stat-body {
   display: flex;
   flex-direction: column;
+  gap: 4px;
 }
 
 .stat-label {
   font-size: 12px;
-  color: #9aa5b5;
-  margin-bottom: 2px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ch-muted);
 }
 
 .stat-value {
-  font-size: 26px;
+  font-size: 28px;
   font-weight: 800;
-  color: #1a2332;
-  letter-spacing: -.5px;
+  color: var(--ch-ink);
+  letter-spacing: -0.03em;
+  line-height: 1;
 }
 
 .stat-value.green {
-  color: #42c978;
+  color: #10b981;
 }
 
 /* ========== 筛选栏 ========== */
@@ -400,206 +471,309 @@ onMounted(() => { fetchConversations() })
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 16px;
   background: #fff;
-  border-radius: 14px;
-  padding: 14px 20px;
-  margin-bottom: 16px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, .04);
-  border: 1px solid rgba(0, 0, 0, .03);
+  border-radius: 18px;
+  padding: 16px 20px;
+  margin-bottom: 18px;
+  box-shadow: 0 10px 32px rgba(21, 32, 51, 0.05);
+  border: 1px solid var(--ch-line);
 }
 
 .filter-left {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 1;
+  min-width: 0;
 }
 
 .search-wrap {
   position: relative;
   display: flex;
   align-items: center;
+  flex: 1;
+  min-width: 220px;
+  max-width: 360px;
 }
 
 .search-icon {
   position: absolute;
-  left: 12px;
-  color: #b0b8c5;
+  left: 14px;
+  color: #94a3b8;
   pointer-events: none;
 }
 
 .filter-input {
-  border: 1.5px solid #e8ecf1;
-  border-radius: 10px;
-  padding: 9px 14px 9px 36px;
+  width: 100%;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 11px 14px 11px 40px;
   font-size: 13px;
   outline: none;
-  width: 240px;
-  transition: all .2s;
-  background: #fafbfc;
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
+  background: #f8fafc;
+  color: var(--ch-ink);
 }
 
 .filter-input:focus {
-  border-color: #5b8def;
+  border-color: rgba(47, 109, 246, 0.45);
   background: #fff;
-  box-shadow: 0 0 0 3px rgba(91, 141, 239, .1);
+  box-shadow: 0 0 0 4px rgba(47, 109, 246, 0.1);
+}
+
+.filter-select {
+  width: 132px;
+  flex-shrink: 0;
+}
+
+.filter-select :deep(.el-select__wrapper) {
+  min-height: 42px;
+  border-radius: 12px;
+  box-shadow: 0 0 0 1px #e2e8f0 inset;
+  background: #f8fafc;
+}
+
+.filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.btn-search,
+.btn-reset {
+  min-height: 42px;
+  padding: 0 20px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
 }
 
 .btn-search {
-  background: linear-gradient(135deg, #5b8def, #7c5bf5);
+  background: var(--goosd-primary);
   color: #fff;
   border: none;
-  border-radius: 10px;
-  padding: 9px 22px;
-  font-size: 13px;
-  cursor: pointer;
-  font-weight: 600;
-  transition: transform .15s, box-shadow .15s;
 }
 
 .btn-search:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(91, 141, 239, .3);
+  box-shadow: var(--goosd-btn-shadow-hover);
+  background: var(--goosd-primary-dark);
 }
 
 .btn-reset {
-  background: #f5f6f8;
-  color: #5a6a7e;
-  border: 1.5px solid #e8ecf1;
-  border-radius: 10px;
-  padding: 9px 18px;
-  font-size: 13px;
-  cursor: pointer;
-  transition: background .15s;
+  background: #fff;
+  color: #475569;
+  border: 1px solid #e2e8f0;
 }
 
 .btn-reset:hover {
-  background: #eef0f3;
+  background: #f8fafc;
 }
 
 .filter-total {
   font-size: 13px;
-  color: #9aa5b5;
+  color: var(--ch-muted);
   white-space: nowrap;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: #f8fafc;
+  border: 1px solid var(--ch-line);
+}
+
+.filter-total strong {
+  color: var(--ch-primary);
+  font-weight: 800;
 }
 
 /* ========== 会话列表 ========== */
 .conv-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
 }
 
 .conv-card {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 16px;
   background: #fff;
-  border-radius: 16px;
-  padding: 18px 22px;
+  border-radius: 18px;
+  padding: 18px 20px;
   cursor: pointer;
-  transition: all .2s;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, .04);
-  border: 1.5px solid transparent;
+  transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+  box-shadow: 0 8px 28px rgba(21, 32, 51, 0.04);
+  border: 1px solid var(--ch-line);
 }
 
 .conv-card:hover {
-  border-color: rgba(91, 141, 239, .2);
-  box-shadow: 0 6px 24px rgba(91, 141, 239, .1);
+  border-color: rgba(47, 109, 246, 0.16);
+  box-shadow: 0 16px 40px rgba(47, 109, 246, 0.1);
   transform: translateY(-2px);
 }
 
 .conv-avatar {
-  width: 46px;
-  height: 46px;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #5b8def, #7c5bf5);
+  width: 48px;
+  height: 48px;
+  border-radius: 15px;
+  background: linear-gradient(135deg, var(--ch-primary), #8b7bf7);
   color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 18px;
-  font-weight: 700;
+  font-weight: 800;
   flex-shrink: 0;
-  box-shadow: 0 3px 10px rgba(91, 141, 239, .25);
+  box-shadow: 0 8px 18px rgba(47, 109, 246, 0.22);
 }
 
-.conv-center {
-  flex: 1;
+.conv-body {
   min-width: 0;
+}
+
+.conv-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
 }
 
 .conv-head {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 6px;
+  min-width: 0;
 }
 
 .conv-name {
-  font-weight: 700;
+  font-weight: 800;
   font-size: 15px;
-  color: #1a2332;
+  color: var(--ch-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.conv-time {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #94a3b8;
 }
 
 .conv-status-pill {
   font-size: 11px;
-  padding: 2px 10px;
-  border-radius: 20px;
-  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-weight: 700;
   border: 1px solid;
-  letter-spacing: .3px;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
 }
 
 .conv-status-pill.small {
   font-size: 10px;
-  padding: 1px 8px;
+  padding: 2px 8px;
+}
+
+.conv-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 8px;
+}
+
+.conv-preview-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  flex-shrink: 0;
+  color: var(--ch-primary);
+  background: rgba(47, 109, 246, 0.08);
+}
+
+.conv-preview--audio .conv-preview-icon {
+  color: #8b5cf6;
+  background: rgba(139, 92, 246, 0.1);
+}
+
+.conv-preview--image .conv-preview-icon {
+  color: #0ea5e9;
+  background: rgba(14, 165, 233, 0.1);
+}
+
+.conv-preview--empty .conv-preview-icon {
+  color: #94a3b8;
+  background: #f1f5f9;
 }
 
 .conv-last-msg {
   font-size: 13px;
-  color: #7a8599;
+  color: #64748b;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  margin-bottom: 6px;
-  line-height: 1.4;
+  line-height: 1.45;
+}
+
+.conv-preview--audio .conv-last-msg,
+.conv-preview--image .conv-last-msg,
+.conv-preview--media .conv-last-msg {
+  color: #475569;
+  font-weight: 600;
 }
 
 .conv-meta {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: #b0b8c5;
+  gap: 8px;
 }
 
-.meta-item {
+.meta-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
+  background: #f8fafc;
+  border: 1px solid var(--ch-line);
+}
+
+.conv-action {
   display: flex;
   align-items: center;
-  gap: 4px;
-}
-
-.meta-dot {
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: #d0d7e2;
-}
-
-.conv-right {
-  display: flex;
-  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: #f8fafc;
   flex-shrink: 0;
+  transition: background 0.2s, transform 0.2s;
 }
 
 .conv-arrow {
-  color: #d0d7e2;
-  transition: color .2s, transform .2s;
+  color: #94a3b8;
+  transition: color 0.2s, transform 0.2s;
+}
+
+.conv-card:hover .conv-action {
+  background: rgba(47, 109, 246, 0.08);
 }
 
 .conv-card:hover .conv-arrow {
-  color: #5b8def;
-  transform: translateX(3px);
+  color: var(--ch-primary);
+  transform: translateX(2px);
 }
 
 /* ========== 空状态 & 加载 ========== */
@@ -987,16 +1161,16 @@ onMounted(() => { fetchConversations() })
 /* ========== 移动端 ========== */
 @media (max-width: 760px) {
   .chat-history-page {
-    padding: 0 10px 40px;
+    padding: 0 12px 40px;
   }
 
   .stats-row {
-    flex-direction: column;
+    grid-template-columns: 1fr;
     gap: 10px;
   }
 
   .stat-card {
-    padding: 16px 18px;
+    padding: 18px;
   }
 
   .filter-bar {
@@ -1013,30 +1187,30 @@ onMounted(() => { fetchConversations() })
 
   .search-wrap {
     width: 100%;
+    max-width: none;
   }
 
   .filter-input {
-    width: 100%;
     font-size: 12px !important;
-    padding: 8px 12px 8px 32px;
+    padding: 10px 12px 10px 36px;
   }
 
-  .btn-search {
-    flex: 1;
-    padding: 9px 0;
-    text-align: center;
+  .filter-select {
+    width: 100%;
   }
 
+  .filter-actions {
+    width: 100%;
+  }
+
+  .btn-search,
   .btn-reset {
     flex: 1;
-    padding: 9px 0;
-    text-align: center;
   }
 
   .filter-total {
     text-align: center;
     font-size: 12px;
-    color: #9aa5b5;
   }
 
   .conv-card {
@@ -1045,20 +1219,19 @@ onMounted(() => { fetchConversations() })
   }
 
   .conv-avatar {
-    width: 40px;
-    height: 40px;
-    font-size: 15px;
-    border-radius: 12px;
+    width: 42px;
+    height: 42px;
+    font-size: 16px;
+    border-radius: 13px;
   }
 
-  .conv-meta {
+  .conv-top {
     flex-direction: column;
-    gap: 2px;
-    align-items: flex-start;
+    gap: 4px;
   }
 
-  .meta-dot {
-    display: none;
+  .conv-time {
+    align-self: flex-start;
   }
 
   .chat-drawer {

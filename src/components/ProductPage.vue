@@ -740,7 +740,7 @@ onMounted(() => {
 .btn-add {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 10px 22px; border-radius: 12px;
-  background: linear-gradient(135deg, #8b7bf7, #5b8def);
+  background: #2f6df6;
   color: #fff; font-weight: 700; font-size: 14px; border: none; cursor: pointer;
   box-shadow: 0 8px 20px rgba(139,123,247,.22);
   transition: transform 200ms cubic-bezier(.22,1,.36,1), box-shadow 200ms ease;
@@ -904,7 +904,7 @@ onMounted(() => {
   border: none; cursor: pointer; transition: all 160ms ease;
 }
 .btn-sm.save {
-  background: linear-gradient(135deg, #8b7bf7, #5b8def); color: #fff;
+  background: #2f6df6; color: #fff;
   box-shadow: 0 4px 12px rgba(139,123,247,.18);
 }
 .btn-sm.save:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(139,123,247,.28); }
@@ -938,9 +938,9 @@ onMounted(() => {
   flex-shrink: 0; min-width: 110px; padding: 0 22px;
   border-radius: 8px; border: none; cursor: pointer;
   color: #fff; font-size: 14px; font-weight: 800;
-  background: linear-gradient(135deg, #8b7bf7, #5b8def);
-  box-shadow: 0 8px 18px rgba(91,141,239,.24);
-  transition: transform 200ms ease, box-shadow 200ms ease, filter 200ms ease;
+  background: #2f6df6;
+  box-shadow: 0 8px 18px rgba(47, 109, 246, 0.24);
+  transition: transform 200ms ease, box-shadow 200ms ease, background 200ms ease;
 }
 .btn-transfer:hover:not(:disabled) { transform: translateY(-1px); filter: saturate(1.08); }
 .btn-transfer:active:not(:disabled) { transform: scale(.97); }
@@ -1097,12 +1097,12 @@ onMounted(() => {
 .btn-cancel:hover { background: #f8faff; color: #8b7bf7; border-color: #d8d0fd; }
 .btn-submit {
   flex: 1.5; padding: 11px 0; border-radius: 12px;
-  background: linear-gradient(135deg, #8b7bf7, #5b8def); border: none;
+  background: #2f6df6; border: none;
   color: #fff; font-weight: 700; font-size: 14px;
-  cursor: pointer; box-shadow: 0 8px 20px rgba(139,123,247,.22);
-  transition: transform 200ms cubic-bezier(.22,1,.36,1), box-shadow 200ms ease;
+  cursor: pointer; box-shadow: 0 8px 20px rgba(47, 109, 246, 0.22);
+  transition: transform 200ms cubic-bezier(.22,1,.36,1), box-shadow 200ms ease, background 200ms ease;
 }
-.btn-submit:hover { transform: translateY(-1px); box-shadow: 0 12px 28px rgba(139,123,247,.3); }
+.btn-submit:hover { transform: translateY(-1px); background: #2558d4; box-shadow: 0 12px 28px rgba(47, 109, 246, 0.28); }
 .btn-submit:active { transform: scale(.98); }
 .btn-submit:disabled { opacity: .6; pointer-events: none; }
 

@@ -2,6 +2,7 @@
 import { computed, inject, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElNotification } from 'element-plus'
+import 'element-plus/es/components/notification/style/css'
 import { canSubmitBatch, getBatchInputSignature, isBatchPrevalidationPassed } from '../utils/batchSubmitGate.js'
 import { getBatchProblemLines, removeBatchProblemLines } from '../utils/batchProblemLines.js'
 
@@ -102,40 +103,53 @@ function nextStep() { goStep(currentStep.value + 1) }
 function prevStep() { goStep(currentStep.value - 1) }
 
 // ========== 批量输入 ==========
+const inputMode = ref('single')
 const batchText = ref('')
+const singleUrl = ref('')
+const singleQuantity = ref('')
+
+function parseContentLine(raw, lineIndex, minQty) {
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+  const parts = trimmed.split(/[\s\t]+/)
+  const url = parts[0] || ''
+  const quantityStr = parts[1] || ''
+  const quantity = parseInt(quantityStr, 10)
+  const errors = []
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    errors.push('链接格式无效')
+  }
+  if (!quantityStr) {
+    errors.push('缺少数量')
+  } else if (isNaN(quantity) || quantity < 1) {
+    errors.push('数量无效')
+  } else if (quantity < minQty) {
+    errors.push(`数量不能少于 ${minQty}`)
+  }
+  return {
+    index: lineIndex,
+    raw: trimmed,
+    url,
+    quantity: isNaN(quantity) ? 0 : quantity,
+    valid: errors.length === 0,
+    error: errors.join('；')
+  }
+}
 
 const parsedLines = computed(() => {
+  const minQty = minQuantity.value
+  if (inputMode.value === 'single') {
+    const url = singleUrl.value.trim()
+    const qty = String(singleQuantity.value ?? '').trim()
+    if (!url && !qty) return []
+    const raw = qty ? `${url} ${qty}` : url
+    const item = parseContentLine(raw, 1, minQty)
+    return item ? [item] : []
+  }
   const text = batchText.value.trim()
   if (!text) return []
-  const lines = text.split('\n')
-  return lines
-    .map((line, index) => {
-      const trimmed = line.trim()
-      if (!trimmed) return null
-      const parts = trimmed.split(/[\s\t]+/)
-      const url = parts[0] || ''
-      const quantityStr = parts[1] || ''
-      const quantity = parseInt(quantityStr, 10)
-      const errors = []
-      if (!url.startsWith('http://') && !url.startsWith('https://')) {
-        errors.push('链接格式无效')
-      }
-      if (!quantityStr) {
-        errors.push('缺少数量')
-      } else if (isNaN(quantity) || quantity < 1) {
-        errors.push('数量无效')
-      } else if (quantity < minQuantity.value) {
-        errors.push(`数量不能少于 ${minQuantity.value}`)
-      }
-      return {
-        index: index + 1,
-        raw: trimmed,
-        url,
-        quantity: isNaN(quantity) ? 0 : quantity,
-        valid: errors.length === 0,
-        error: errors.join('；')
-      }
-    })
+  return text.split('\n')
+    .map((line, index) => parseContentLine(line, index + 1, minQty))
     .filter(item => item !== null)
 })
 
@@ -244,12 +258,36 @@ const submitBlockReason = computed(() => {
 const step2BlockReason = computed(() => {
   if (parsedLines.value.length === 0) return '请先输入链接和数量'
   if (validLines.value.length === 0) return '没有有效的输入行'
-  if (validLines.value.length !== parsedLines.value.length) return '存在格式或数量错误，请修正后重新校验'
-  if (prevalidating.value) return '正在预校验...'
-  if (!prevalidateSignature.value || prevalidateSignature.value !== currentInputSignature.value) return '请先点击「预校验」，通过后才能下一步'
-  if (!prevalidationPassed.value) return '预校验未全部通过，请删除问题链接后重试'
+  if (validLines.value.length !== parsedLines.value.length) return '存在格式或数量错误，请修正后重试'
   return ''
 })
+
+const canTryStep3 = computed(() => {
+  if (prevalidating.value) return false
+  if (parsedLines.value.length === 0) return false
+  if (validLines.value.length !== parsedLines.value.length) return false
+  return true
+})
+
+async function handleStep2Next() {
+  if (!canTryStep3.value) return
+  if (!prevalidationPassed.value) {
+    await prevalidate()
+  }
+  if (!prevalidationPassed.value) {
+    const failed = prevalidateResults.value.filter(r => !r.valid).length
+    ElNotification({
+      title: '预校验未通过',
+      message: failed > 0
+        ? `${failed} 条链接未通过，请查看预校验结果并修正后重试`
+        : '预校验未通过，请修正后重试',
+      type: 'warning',
+      duration: 5000
+    })
+    return
+  }
+  goStep(3)
+}
 
 const balanceInsufficient = computed(() => totalCost.value > 0 && balance.value < totalCost.value)
 function showBalanceNotification() {
@@ -294,6 +332,8 @@ async function submitBatch() {
         duration: 8000
       })
       batchText.value = ''
+      singleUrl.value = ''
+      singleQuantity.value = ''
       agreed.value = false
       prevalidateResults.value = []
       prevalidateSignature.value = ''
@@ -330,10 +370,22 @@ async function prevalidate() {
     if (data.code === 0 && data.data?.results) {
       prevalidateResults.value = data.data.results
       prevalidateSignature.value = currentInputSignature.value
+    } else {
+      ElNotification({
+        title: '预校验失败',
+        message: data.message || '预校验请求失败，请稍后重试',
+        type: 'error',
+        duration: 5000
+      })
     }
     showBalanceNotification()
   } catch {
-    // ignore
+    ElNotification({
+      title: '预校验失败',
+      message: '网络错误，请检查连接后重试',
+      type: 'error',
+      duration: 5000
+    })
   } finally {
     prevalidating.value = false
   }
@@ -342,6 +394,11 @@ async function prevalidate() {
 // ========== 填充示例 ==========
 function fillExample() {
   const min = minQuantity.value || 100
+  if (inputMode.value === 'single') {
+    singleUrl.value = 'https://xhslink.com/example1'
+    singleQuantity.value = String(min)
+    return
+  }
   batchText.value = `https://xhslink.com/example1 ${min}\nhttps://xhslink.com/example2 ${min * 2}\nhttps://xhslink.com/example3 ${min}`
 }
 
@@ -364,10 +421,15 @@ function removeInvalidLines() {
   if (allInvalidLines.value.length === 0) return
   removedLines.value = [...allInvalidLines.value]
   duplicateCopySuccess.value = false
-  batchText.value = removeBatchProblemLines({
-    parsedLines: parsedLines.value,
-    problemLines: allInvalidLines.value
-  })
+  if (inputMode.value === 'single') {
+    singleUrl.value = ''
+    singleQuantity.value = ''
+  } else {
+    batchText.value = removeBatchProblemLines({
+      parsedLines: parsedLines.value,
+      problemLines: allInvalidLines.value
+    })
+  }
   prevalidateResults.value = []
 }
 
@@ -411,13 +473,15 @@ async function copyDuplicateRemovedLines() {
 // ========== 清空 ==========
 function clearInput() {
   batchText.value = ''
+  singleUrl.value = ''
+  singleQuantity.value = ''
   prevalidateResults.value = []
   prevalidateSignature.value = ''
   removedLines.value = []
   duplicateCopySuccess.value = false
 }
 
-watch([batchText, activeProductId], () => {
+watch([batchText, singleUrl, singleQuantity, activeProductId, inputMode], () => {
   prevalidateResults.value = []
   prevalidateSignature.value = ''
 })
@@ -563,24 +627,48 @@ onMounted(() => {
 
     <!-- ============ 第 2 步：输入链接和数量 ============ -->
     <section v-show="currentStep === 2" class="card step-card step-enter">
-      <header class="step-head">
-        <span class="step-kicker">第 2 步</span>
-        <h2 class="card-heading">输入链接与数量</h2>
-        <p class="step-tip">
-          <span class="inline-badge">{{ activeTypeLabel }}</span>
-          <span class="inline-badge alt">{{ activeDataSourceLabel }}</span>
-          格式：链接 + 数量，支持空格或 Tab 分隔。
-        </p>
+      <header class="step-head step-head--split">
+        <div class="step-head-main">
+          <span class="step-kicker">第 2 步</span>
+          <h2 class="card-heading">输入链接与数量</h2>
+          <p class="step-tip">
+            <span class="inline-badge">{{ activeTypeLabel }}</span>
+            <span class="inline-badge alt">{{ activeDataSourceLabel }}</span>
+            <template v-if="inputMode === 'batch'">格式：链接 + 数量，支持空格或 Tab 分隔。</template>
+            <template v-else>单条提交：分别填写链接与数量。</template>
+          </p>
+        </div>
+        <div class="input-mode-toggle" role="tablist" aria-label="输入模式">
+          <button
+            type="button"
+            role="tab"
+            :class="{ active: inputMode === 'single' }"
+            :aria-selected="inputMode === 'single'"
+            @click="inputMode = 'single'"
+          >单条</button>
+          <button
+            type="button"
+            role="tab"
+            :class="{ active: inputMode === 'batch' }"
+            :aria-selected="inputMode === 'batch'"
+            @click="inputMode = 'batch'"
+          >批量</button>
+        </div>
       </header>
 
       <div class="format-hint">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
         <p class="format-hint-text">
-          每行一条：<code>链接</code> + 空格/Tab + <code>数量</code>，数量不低于 {{ minQuantity }}
+          <template v-if="inputMode === 'batch'">
+            每行一条：<code>链接</code> + 空格/Tab + <code>数量</code>，数量不低于 {{ minQuantity }}
+          </template>
+          <template v-else>
+            填写一条笔记链接与下单数量，数量不低于 {{ minQuantity }}
+          </template>
         </p>
       </div>
 
-      <div class="editor-panel">
+      <div v-if="inputMode === 'batch'" class="editor-panel">
         <div class="textarea-label">
           <span class="textarea-title">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
@@ -591,6 +679,38 @@ onMounted(() => {
         <textarea v-model="batchText" class="batch-textarea"
           :placeholder="`示例：https://xhslink.com/xxxxxx ${minQuantity}（${activeTypeLabel}）`"
           spellcheck="false"></textarea>
+      </div>
+
+      <div v-else class="editor-panel single-panel">
+        <div class="textarea-label">
+          <span class="textarea-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 1 0-7l1.4-1.4a5 5 0 1 1 7.1 7.1L17 13"/><path d="M14 11a5 5 0 0 1 0 7l-1.4 1.4a5 5 0 1 1-7.1-7.1L7 11"/></svg>
+            单条内容
+          </span>
+          <span class="line-count"><span class="lc-num">{{ lineCount }}</span> 条<span class="lc-sep">·</span>最低 {{ minQuantity }}</span>
+        </div>
+        <div class="single-fields">
+          <label class="single-field">
+            <span class="single-field-label">笔记链接</span>
+            <input
+              v-model="singleUrl"
+              type="url"
+              class="single-input"
+              placeholder="https://xhslink.com/xxxxxx"
+              spellcheck="false"
+            />
+          </label>
+          <label class="single-field">
+            <span class="single-field-label">下单数量</span>
+            <input
+              v-model="singleQuantity"
+              type="number"
+              class="single-input"
+              :min="minQuantity"
+              :placeholder="String(minQuantity)"
+            />
+          </label>
+        </div>
       </div>
 
       <!-- 预校验结果 -->
@@ -613,6 +733,7 @@ onMounted(() => {
             <span class="pv-msg">{{ r.valid ? '通过' : (r.message || '无效') }}</span>
           </li>
         </ul>
+        <p v-if="!prevalidationPassed" class="pv-fail-tip">预校验未全部通过，请修正链接后重新预校验</p>
       </div>
 
       <!-- 删除记录 -->
@@ -653,9 +774,15 @@ onMounted(() => {
         <button type="button" class="btn btn-ghost" @click="prevStep">上一步</button>
         <div class="step-actions-right">
           <span v-if="step2BlockReason" class="step-hint">{{ step2BlockReason }}</span>
-          <span v-else class="step-ok">预校验通过，可进入下一步</span>
-          <button type="button" class="btn btn-primary" :disabled="!prevalidationPassed" @click="nextStep">
-            下一步：确认下单
+          <span v-else-if="prevalidationPassed" class="step-ok">预校验通过</span>
+          <button
+            v-if="canTryStep3 || prevalidating"
+            type="button"
+            class="btn btn-primary"
+            :disabled="!canTryStep3"
+            @click="handleStep2Next"
+          >
+            {{ prevalidating ? '校验中...' : '下一步：确认下单' }}
           </button>
         </div>
       </div>
@@ -762,8 +889,8 @@ onMounted(() => {
 /* ========== 设计变量 ========== */
 .batch-wizard {
   --bw-primary: #2f6df6;
-  --bw-accent: #ee4d7a;
-  --bw-purple: #8b7bf7;
+  --bw-accent: #2f6df6;
+  --bw-purple: #2558d4;
   --bw-success: #42c978;
   --bw-danger: #ff4d4f;
   --bw-text: #152033;
@@ -789,17 +916,14 @@ onMounted(() => {
   position: relative;
   border-radius: var(--bw-radius);
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.6);
+  border: 1px solid var(--bw-border);
   box-shadow: var(--bw-shadow-lg);
 }
 
 .hero-bg {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(ellipse 80% 60% at 10% 0%, rgba(238, 77, 122, 0.12), transparent 55%),
-    radial-gradient(ellipse 70% 50% at 90% 100%, rgba(47, 109, 246, 0.14), transparent 50%),
-    linear-gradient(135deg, #f8faff 0%, #fff5f8 45%, #f3f7ff 100%);
+  background: #fff;
 }
 
 .hero-content {
@@ -953,8 +1077,8 @@ onMounted(() => {
   width: 4px;
   height: 20px;
   border-radius: 999px;
-  background: linear-gradient(180deg, var(--bw-accent), var(--bw-primary));
-  box-shadow: 0 2px 8px rgba(238, 77, 122, 0.3);
+  background: var(--goosd-primary);
+  box-shadow: 0 2px 8px rgba(47, 109, 246, 0.28);
 }
 
 .step-enter {
@@ -996,7 +1120,7 @@ onMounted(() => {
   height: 100%;
   width: var(--stepper-progress, 0%);
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--bw-success), #5b8def 50%, var(--bw-primary));
+  background: var(--goosd-primary);
   transition: width 400ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -1050,7 +1174,7 @@ onMounted(() => {
 .step.active .step-index {
   border-color: transparent;
   color: #fff;
-  background: linear-gradient(135deg, #7b7df4, var(--bw-primary));
+  background: var(--goosd-primary);
   box-shadow: 0 6px 16px rgba(47, 109, 246, 0.35);
   transform: scale(1.05);
 }
@@ -1102,8 +1226,54 @@ onMounted(() => {
   gap: 6px;
 }
 
+.step-head--split {
+  flex-direction: row;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.step-head-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.input-mode-toggle {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding: 3px;
+  border-radius: 10px;
+  background: #f1f5f9;
+  border: 1px solid var(--bw-border);
+}
+
+.input-mode-toggle button {
+  min-width: 56px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #64748b;
+  transition: color 180ms ease, background 180ms ease, box-shadow 180ms ease;
+}
+
+.input-mode-toggle button.active {
+  color: #fff;
+  background: var(--goosd-primary);
+  box-shadow: var(--goosd-btn-shadow);
+}
+
+.input-mode-toggle button:not(.active):hover {
+  color: #334155;
+  background: rgba(255, 255, 255, 0.7);
+}
+
 .step-kicker {
-  color: #5b8def;
+  color: var(--goosd-primary);
   font-size: 12px;
   font-weight: 900;
   letter-spacing: 0.5px;
@@ -1130,8 +1300,8 @@ onMounted(() => {
 }
 
 .inline-badge.alt {
-  background: #fff0f5;
-  color: #ee4d7a;
+  background: var(--goosd-primary-soft);
+  color: var(--goosd-primary);
 }
 
 /* ========== 字段块 ========== */
@@ -1187,7 +1357,7 @@ onMounted(() => {
 .type-tab.active {
   color: #fff;
   border-color: transparent;
-  background: linear-gradient(135deg, #7b7df4, var(--bw-primary));
+  background: var(--goosd-primary);
   box-shadow: 0 8px 20px rgba(47, 109, 246, 0.28);
   transform: translateY(-1px);
 }
@@ -1238,8 +1408,8 @@ onMounted(() => {
 .source-icon svg { width: 20px; height: 20px; }
 
 .source-icon.realtime {
-  background: linear-gradient(135deg, #fff0f5, #ffe8f0);
-  color: var(--bw-accent);
+  background: var(--goosd-primary-soft);
+  color: var(--goosd-primary);
 }
 
 .source-icon.pgy {
@@ -1248,12 +1418,12 @@ onMounted(() => {
 }
 
 .source-card.active .source-icon.realtime {
-  background: linear-gradient(135deg, var(--bw-accent), #f06b94);
+  background: var(--goosd-primary);
   color: #fff;
 }
 
 .source-card.active .source-icon.pgy {
-  background: linear-gradient(135deg, #7b7df4, var(--bw-primary));
+  background: var(--goosd-primary);
   color: #fff;
 }
 
@@ -1310,7 +1480,7 @@ onMounted(() => {
   flex-shrink: 0;
   font-size: 13px;
   font-weight: 800;
-  color: #ee4d7a;
+  color: var(--goosd-primary);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1319,7 +1489,7 @@ onMounted(() => {
   padding: 16px 18px;
   border-radius: 12px;
   border: 1px solid #e4ebf7;
-  background: linear-gradient(135deg, #f8faff 0%, #faf5ff 50%, #fff8fa 100%);
+  background: linear-gradient(135deg, #f8faff 0%, #f0f5ff 100%);
 }
 
 .cs-header {
@@ -1352,8 +1522,8 @@ onMounted(() => {
 }
 
 .cs-item.highlight {
-  background: linear-gradient(135deg, rgba(238, 77, 122, 0.08), rgba(255, 255, 255, 0.9));
-  border-color: rgba(238, 77, 122, 0.15);
+  background: var(--goosd-primary-muted);
+  border-color: rgba(47, 109, 246, 0.18);
 }
 
 .cs-label {
@@ -1368,7 +1538,7 @@ onMounted(() => {
 }
 
 .cs-item strong.cs-price {
-  color: #ee4d7a;
+  color: var(--goosd-primary);
 }
 
 /* ========== 格式提示 & 编辑区 ========== */
@@ -1489,6 +1659,48 @@ onMounted(() => {
   color: #c0c8d4;
 }
 
+.single-fields {
+  display: grid;
+  grid-template-columns: 1fr 160px;
+  gap: 12px;
+}
+
+.single-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.single-field-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: #64748b;
+}
+
+.single-input {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 14px;
+  border: 1.5px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  color: var(--bw-text);
+  font-size: 14px;
+  outline: none;
+  transition: border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.single-input:focus {
+  border-color: rgba(47, 109, 246, 0.45);
+  box-shadow: 0 0 0 4px rgba(47, 109, 246, 0.1);
+}
+
+.single-panel .single-fields {
+  min-height: 120px;
+  align-content: start;
+}
+
 /* ========== 工具按钮行 ========== */
 .tool-row {
   display: flex;
@@ -1548,15 +1760,15 @@ onMounted(() => {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, #ee4d7a 0%, #7b7df4 54%, #2f6df6 100%);
+  background: var(--goosd-primary);
   color: #fff;
-  box-shadow: 0 10px 22px rgba(91, 141, 239, 0.24);
+  box-shadow: 0 10px 22px rgba(47, 109, 246, 0.24);
 }
 
 .btn-primary:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 14px 30px rgba(91, 141, 239, 0.32);
-  filter: saturate(1.08);
+  background: var(--goosd-primary-dark);
+  box-shadow: 0 14px 30px rgba(47, 109, 246, 0.32);
 }
 
 .btn-primary:active:not(:disabled) {
@@ -1695,6 +1907,16 @@ onMounted(() => {
 
 .prevalidate-results li.valid { border-left: 3px solid var(--bw-success); }
 .prevalidate-results li.invalid { border-left: 3px solid var(--bw-danger); }
+
+.pv-fail-tip {
+  margin: 14px 0 0;
+  padding-top: 14px;
+  border-top: 1px solid #ffe1ad;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #b96b00;
+  text-align: right;
+}
 
 .pv-avatar {
   width: 28px;
@@ -1841,7 +2063,7 @@ onMounted(() => {
 .settle-hero {
   border-radius: 14px;
   overflow: hidden;
-  background: linear-gradient(135deg, #ee4d7a 0%, #8b7bf7 45%, #2f6df6 100%);
+  background: var(--goosd-primary);
   box-shadow: 0 12px 32px rgba(47, 109, 246, 0.22);
 }
 
@@ -1901,8 +2123,8 @@ onMounted(() => {
 }
 
 .settle-item.accent {
-  border-color: #f8d8e4;
-  background: linear-gradient(135deg, #fff3f7, #fff9fb);
+  border-color: #c7d7ff;
+  background: linear-gradient(135deg, #f0f5ff, #fafbff);
 }
 
 .settle-item.valid {
@@ -1931,11 +2153,11 @@ onMounted(() => {
 }
 
 .settle-value.cost {
-  color: #ee4d7a;
+  color: var(--goosd-primary);
 }
 
 .settle-value.balance-val {
-  color: #8b7bf7;
+  color: var(--goosd-primary);
 }
 
 .settle-value.ok-text {
@@ -2014,7 +2236,7 @@ onMounted(() => {
 }
 
 .agree-check input:checked+.checkmark {
-  background: linear-gradient(135deg, #8b7bf7, #5b8def);
+  background: var(--goosd-primary);
   border-color: transparent;
 }
 
@@ -2038,12 +2260,40 @@ onMounted(() => {
   .hero-content {
     flex-direction: column;
     align-items: stretch;
-    padding: 18px 16px;
+    padding: 14px 14px;
+    gap: 12px;
   }
 
-  .hero-title { font-size: 19px; }
+  .hero-badge {
+    font-size: 10px;
+    padding: 3px 10px;
+    margin-bottom: 6px;
+  }
 
-  .connection-pill { min-width: 0; }
+  .hero-title {
+    font-size: 16px;
+    letter-spacing: -0.2px;
+  }
+
+  .hero-desc {
+    font-size: 12px;
+    line-height: 1.45;
+    margin-top: 4px;
+  }
+
+  .connection-pill {
+    min-width: 0;
+    padding: 10px 12px;
+    gap: 10px;
+  }
+
+  .conn-text strong {
+    font-size: 12px;
+  }
+
+  .conn-text small {
+    font-size: 10px;
+  }
 
   .card {
     padding: 16px;
@@ -2078,21 +2328,80 @@ onMounted(() => {
     display: none;
   }
 
+  .step-kicker {
+    font-size: 11px;
+  }
+
+  .step-tip {
+    font-size: 12px;
+    line-height: 1.45;
+  }
+
   .card-heading {
-    font-size: 16px;
+    font-size: 14px;
   }
 
   .card-heading::before {
-    height: 15px;
+    height: 13px;
+  }
+
+  .field-label {
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .field-icon {
+    width: 14px;
+    height: 14px;
+  }
+
+  .step-head--split {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .input-mode-toggle {
+    align-self: flex-end;
+  }
+
+  .single-fields {
+    grid-template-columns: 1fr;
   }
 
   .type-tab {
-    padding: 8px 16px;
-    font-size: 13px;
+    padding: 7px 14px;
+    font-size: 12px;
   }
 
   .source-cards {
     grid-template-columns: 1fr;
+  }
+
+  .source-card {
+    padding: 12px 14px;
+    gap: 10px;
+  }
+
+  .source-icon {
+    width: 34px;
+    height: 34px;
+  }
+
+  .source-icon svg {
+    width: 17px;
+    height: 17px;
+  }
+
+  .source-body strong {
+    font-size: 13px;
+  }
+
+  .source-body small {
+    font-size: 11px;
+  }
+
+  .source-price {
+    font-size: 12px;
   }
 
   .choice-summary { padding: 14px; }
