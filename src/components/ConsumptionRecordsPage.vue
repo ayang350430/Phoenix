@@ -202,6 +202,7 @@ function onCrBeforeEnter(el) {
   node.style.overflow = 'hidden'
 }
 
+// 展开记录
 function onCrEnter(el, done) {
   const node = crExpandEl(el)
   if (!node) {
@@ -231,6 +232,7 @@ function onCrEnter(el, done) {
   requestAnimationFrame(() => requestAnimationFrame(run))
 }
 
+// 关闭记录
 function onCrBeforeLeave(el) {
   const node = crExpandEl(el)
   if (!node) return
@@ -239,6 +241,7 @@ function onCrBeforeLeave(el) {
   node.style.overflow = 'hidden'
 }
 
+// 关闭记录
 function onCrLeave(el, done) {
   const node = crExpandEl(el)
   if (!node) {
@@ -266,6 +269,7 @@ function onCrLeave(el, done) {
   requestAnimationFrame(run)
 }
 
+// 是否有记录详情
 function hasRecordDetail(r) {
   return !!(
     (isAdmin.value && displayUser(r)) ||
@@ -278,11 +282,13 @@ function hasRecordDetail(r) {
   )
 }
 
+// 切换记录展开状态
 function toggleRecord(r) {
   if (!hasRecordDetail(r)) return
   expandedRecordId.value = expandedRecordId.value === r.id ? null : r.id
 }
 
+// 是否显示类型标签
 function showTypeTag(r) {
   return typeBadgeLabel(r) !== recordLabel(r)
 }
@@ -294,6 +300,7 @@ const previewOrder = ref(null)
 const previewError = ref('')
 const previewAvatarFailed = ref(false)
 
+// 订单状态配置
 const orderStatusConf = {
   pending: { label: '待处理', color: '#9aa5b5' },
   running: { label: '进行中', color: '#5b8def' },
@@ -309,6 +316,7 @@ const orderStatusConf = {
 const orderTypeMap = { read: '阅读', like: '点赞', impression: '曝光', collect: '收藏', comment: '评论', view: '阅读' }
 
 function osc(s) { return orderStatusConf[s] || { label: s || '未知', color: '#9aa5b5' } }
+// 预览订单类型标签
 function previewTypeLabel(o) {
   if (o?.product_name) return o.product_name.replace(/^小红书/, '')
   return orderTypeMap[o?.target_type] || o?.target_type || '-'
