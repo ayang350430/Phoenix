@@ -4,6 +4,8 @@ import { ElPagination, ElSelect, ElOption } from 'element-plus'
 import 'element-plus/es/components/pagination/style/css'
 import 'element-plus/es/components/select/style/css'
 import 'element-plus/es/components/option/style/css'
+import EmptyState from './EmptyState.vue'
+import UserAvatar from './UserAvatar.vue'
 
 const { getToken, isAdmin } = inject('workspace')
 
@@ -138,75 +140,68 @@ onMounted(() => { fetchConversations() })
 
 <template>
   <div class="chat-history-page">
-    <!-- 顶部统计卡片 -->
-    <div class="stats-row">
-      <div class="stat-card stat-card--total">
-        <div class="stat-icon icon-total">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-          </svg>
+    <header class="page-hero">
+      <div class="hero-bg" aria-hidden="true"></div>
+      <div class="hero-content hero-row">
+        <div class="hero-main">
+          <span class="hero-badge">客服中心</span>
+          <h1 class="hero-title">聊天记录</h1>
+          <p class="hero-desc">查看用户与客服的会话记录，支持按状态筛选与消息检索</p>
         </div>
-        <div class="stat-body">
-          <span class="stat-label">会话总数</span>
-          <strong class="stat-value">{{ total }}</strong>
-        </div>
-      </div>
-      <div class="stat-card stat-card--open">
-        <div class="stat-icon icon-open">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="1" />
-            <circle cx="12" cy="12" r="5" />
-            <circle cx="12" cy="12" r="9" />
-          </svg>
-        </div>
-        <div class="stat-body">
-          <span class="stat-label">进行中</span>
-          <strong class="stat-value green">{{ totalOpen }}</strong>
-        </div>
-      </div>
-    </div>
-
-    <!-- 筛选栏 -->
-    <div class="filter-bar">
-      <div class="filter-left">
-        <div class="search-wrap">
-          <svg class="search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-            stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="11" cy="11" r="8" />
-            <line x1="21" y1="21" x2="16.65" y2="16.65" />
-          </svg>
-          <input v-model="searchKey" placeholder="搜索用户名 / 消息内容" class="filter-input" @keyup.enter="doSearch" />
-        </div>
-        <el-select v-model="filterStatus" placeholder="全部状态" clearable class="filter-select" @change="doSearch">
-          <el-option label="全部状态" value="" />
-          <el-option label="进行中" value="open" />
-          <el-option label="已结束" value="closed" />
-        </el-select>
-        <div class="filter-actions">
-          <button type="button" class="btn-search" @click="doSearch">搜索</button>
-          <button type="button" class="btn-reset" @click="resetSearch">重置</button>
-        </div>
-      </div>
-      <span class="filter-total">共 <strong>{{ total }}</strong> 条会话</span>
-    </div>
-
-    <!-- 会话列表 -->
-    <div class="conv-list">
-      <div v-if="loading" class="loading-state">
-        <div class="spinner"></div>
-        <span>加载中...</span>
-      </div>
-      <template v-else-if="conversations.length">
-        <div v-for="conv in conversations" :key="conv.id" class="conv-card" @click="openDrawer(conv)">
-          <div class="conv-avatar">
-            <span>{{ (displayName(conv) || '用')[0] }}</span>
+        <div class="hero-stats">
+          <div class="hero-stat">
+            <strong class="hero-stat-val">{{ total }}</strong>
+            <span class="hero-stat-label">会话总数</span>
           </div>
-          <div class="conv-body">
-            <div class="conv-top">
-              <div class="conv-head">
-                <span class="conv-name">{{ displayName(conv) }}</span>
+          <div class="hero-stat-split" aria-hidden="true"></div>
+          <div class="hero-stat">
+            <strong class="hero-stat-val hero-stat-val--open">{{ totalOpen }}</strong>
+            <span class="hero-stat-label">进行中</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <section class="chat-panel">
+      <div class="chat-filter">
+        <div class="chat-filter-head">
+          <span class="chat-filter-title">会话列表</span>
+          <span class="chat-filter-count">共 <strong>{{ total }}</strong> 条</span>
+        </div>
+        <form class="chat-filter-bar" @submit.prevent="doSearch">
+          <label class="chat-search-field">
+            <svg class="chat-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input
+              v-model="searchKey"
+              class="chat-search-input"
+              type="search"
+              placeholder="搜索用户名 / 消息内容"
+              @keyup.enter="doSearch"
+            />
+          </label>
+          <el-select v-model="filterStatus" placeholder="全部状态" clearable class="chat-filter-select" @change="doSearch">
+            <el-option label="全部状态" value="" />
+            <el-option label="进行中" value="open" />
+            <el-option label="已结束" value="closed" />
+          </el-select>
+          <button type="submit" class="cf-btn cf-btn--primary">搜索</button>
+          <button type="button" class="cf-btn cf-btn--ghost" @click="resetSearch">重置</button>
+        </form>
+      </div>
+
+      <div class="conv-list">
+        <template v-if="!loading && conversations.length">
+          <article
+            v-for="conv in conversations"
+            :key="conv.id"
+            class="conv-card"
+            :class="`is-${conv.status || 'closed'}`"
+            @click="openDrawer(conv)"
+          >
+            <UserAvatar :name="displayName(conv)" :size="42" shape="rounded" />
+            <div class="conv-body">
+              <div class="conv-title-row">
+                <strong class="conv-name">{{ displayName(conv) }}</strong>
                 <span
                   class="conv-status-pill"
                   :style="{
@@ -215,57 +210,37 @@ onMounted(() => { fetchConversations() })
                     borderColor: statusInfo(conv.status).border
                   }"
                 >{{ statusInfo(conv.status).label }}</span>
+                <time class="conv-time">{{ fmtShortTime(conv.last_message_at) }}</time>
               </div>
-              <time class="conv-time">{{ fmtShortTime(conv.last_message_at) }}</time>
+              <div class="conv-preview-line" :class="`conv-preview--${lastMessageKind(conv.last_message)}`">
+                <span class="conv-last-msg">{{ formatLastMessage(conv.last_message) }}</span>
+                <span class="meta-chip">{{ conv.msg_count || 0 }} 条</span>
+              </div>
             </div>
-            <div class="conv-preview" :class="`conv-preview--${lastMessageKind(conv.last_message)}`">
-              <span class="conv-preview-icon" aria-hidden="true">
-                <svg v-if="lastMessageKind(conv.last_message) === 'image'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="3" y="3" width="18" height="18" rx="2" />
-                  <circle cx="8.5" cy="8.5" r="1.5" />
-                  <path d="m21 15-5-5L5 21" />
-                </svg>
-                <svg v-else-if="lastMessageKind(conv.last_message) === 'audio'" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                  <line x1="12" y1="19" x2="12" y2="23" />
-                  <line x1="8" y1="23" x2="16" y2="23" />
-                </svg>
-                <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                </svg>
-              </span>
-              <span class="conv-last-msg">{{ formatLastMessage(conv.last_message) }}</span>
-            </div>
-            <div class="conv-meta">
-              <span class="meta-chip">{{ conv.msg_count || 0 }} 条消息</span>
-            </div>
-          </div>
-          <div class="conv-action" aria-hidden="true">
-            <svg class="conv-arrow" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-              stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <polyline points="9 18 15 12 9 6" />
-            </svg>
-          </div>
-        </div>
-      </template>
-      <div v-else class="empty-state">
-        <div class="empty-icon">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
-            stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-          </svg>
-        </div>
-        <p>暂无聊天记录</p>
-        <span>用户发起客服咨询后，聊天记录将显示在这里</span>
+            <svg class="conv-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+          </article>
+        </template>
+        <EmptyState v-if="loading" loading class="empty-state" />
+        <EmptyState
+          v-else-if="!conversations.length"
+          class="empty-state"
+          text="暂无聊天记录"
+          description="用户发起客服咨询后，聊天记录将显示在这里"
+        />
       </div>
-    </div>
 
-    <!-- 分页 -->
-    <div v-if="total > 0" class="pagination-wrap">
-      <el-pagination v-model:current-page="page" :page-size="pageSize" :total="total" layout="total, prev, pager, next"
-        background small @current-change="fetchConversations" />
-    </div>
+      <div v-if="total > 0" class="pagination-wrap">
+        <el-pagination
+          v-model:current-page="page"
+          :page-size="pageSize"
+          :total="total"
+          layout="total, prev, pager, next"
+          background
+          small
+          @current-change="fetchConversations"
+        />
+      </div>
+    </section>
 
     <!-- 聊天详情抽屉 -->
     <Transition name="drawer-fade">
@@ -276,9 +251,12 @@ onMounted(() => { fetchConversations() })
             <div class="drawer-header">
               <div class="drawer-title-row">
                 <div class="drawer-user-info">
-                  <div class="drawer-avatar">
-                    <span>{{ drawerConv ? (displayName(drawerConv) || '用')[0] : '' }}</span>
-                  </div>
+                  <UserAvatar
+                    v-if="drawerConv"
+                    :name="displayName(drawerConv)"
+                    :size="44"
+                    shape="rounded"
+                  />
                   <div>
                     <h3>{{ drawerConv ? displayName(drawerConv) : '' }}</h3>
                     <div class="drawer-sub">
@@ -346,12 +324,7 @@ onMounted(() => { fetchConversations() })
                   </div>
                 </template>
               </template>
-              <div v-else class="drawer-empty">
-                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#d0d7e2" stroke-width="1.5">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                </svg>
-                <span>暂无消息记录</span>
-              </div>
+              <EmptyState v-else compact text="暂无消息记录" class="drawer-empty" />
             </div>
           </div>
         </Transition>
@@ -371,308 +344,338 @@ onMounted(() => { fetchConversations() })
 .chat-history-page {
   --ch-primary: #2f6df6;
   --ch-ink: #152033;
-  --ch-muted: #64748b;
-  --ch-line: rgba(21, 32, 51, 0.08);
-  max-width: 1080px;
+  --ch-muted: #8a95a8;
+  --ch-border: #e8eef7;
+  --ch-radius: 14px;
+  --ch-shadow: 0 4px 24px rgba(21, 32, 51, 0.06), 0 1px 3px rgba(21, 32, 51, 0.04);
+  max-width: 1200px;
   margin: 0 auto;
-  padding: 0 20px 60px;
+  padding: 20px 20px 60px;
 }
 
-/* ========== 统计卡片 ========== */
-.stats-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  margin-top: 20px;
-  margin-bottom: 20px;
-}
-
-.stat-card {
+/* ========== 页面头部 ========== */
+.page-hero {
   position: relative;
+  border-radius: var(--ch-radius);
   overflow: hidden;
-  background: #fff;
-  border-radius: 18px;
-  padding: 22px 24px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  box-shadow: 0 10px 32px rgba(21, 32, 51, 0.05);
-  border: 1px solid var(--ch-line);
+  margin-bottom: 14px;
+  border: 1px solid rgba(47, 109, 246, 0.12);
+  box-shadow: var(--ch-shadow);
 }
 
-.stat-card::before {
-  content: '';
+.hero-bg {
   position: absolute;
-  top: 0;
-  left: 24px;
-  right: 24px;
-  height: 3px;
-  border-radius: 999px;
-  opacity: 0.9;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 80% 60% at 0% 0%, rgba(47, 109, 246, 0.12), transparent 55%),
+    radial-gradient(ellipse 50% 40% at 100% 100%, rgba(47, 109, 246, 0.06), transparent 50%),
+    linear-gradient(180deg, #fff 0%, #fafbff 100%);
 }
 
-.stat-card--total::before {
-  background: linear-gradient(90deg, var(--ch-primary), #8b7bf7);
+.hero-content {
+  position: relative;
+  z-index: 1;
+  padding: 20px 22px;
 }
 
-.stat-card--open::before {
-  background: linear-gradient(90deg, #34d399, #10b981);
-}
-
-.stat-icon {
-  width: 50px;
-  height: 50px;
-  border-radius: 15px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.icon-total {
-  background: linear-gradient(145deg, rgba(47, 109, 246, 0.14), rgba(47, 109, 246, 0.05));
-  color: var(--ch-primary);
-  border: 1px solid rgba(47, 109, 246, 0.1);
-}
-
-.icon-open {
-  background: linear-gradient(145deg, rgba(16, 185, 129, 0.14), rgba(16, 185, 129, 0.05));
-  color: #10b981;
-  border: 1px solid rgba(16, 185, 129, 0.12);
-}
-
-.stat-body {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.stat-label {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  color: var(--ch-muted);
-}
-
-.stat-value {
-  font-size: 28px;
-  font-weight: 800;
-  color: var(--ch-ink);
-  letter-spacing: -0.03em;
-  line-height: 1;
-}
-
-.stat-value.green {
-  color: #10b981;
-}
-
-/* ========== 筛选栏 ========== */
-.filter-bar {
+.hero-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  background: #fff;
-  border-radius: 18px;
-  padding: 16px 20px;
-  margin-bottom: 18px;
-  box-shadow: 0 10px 32px rgba(21, 32, 51, 0.05);
-  border: 1px solid var(--ch-line);
+  gap: 20px;
 }
 
-.filter-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 1;
+.hero-main {
   min-width: 0;
+  flex: 1;
 }
 
-.search-wrap {
-  position: relative;
+.hero-badge {
+  display: inline-flex;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(47, 109, 246, 0.1);
+  color: var(--ch-primary);
+  font-size: 11px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.hero-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 900;
+  color: var(--ch-ink);
+  line-height: 1.2;
+}
+
+.hero-desc {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--ch-muted);
+  line-height: 1.5;
+  max-width: 480px;
+}
+
+.hero-stats {
+  display: flex;
+  align-items: stretch;
+  flex-shrink: 0;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(47, 109, 246, 0.1);
+  box-shadow: 0 4px 14px rgba(47, 109, 246, 0.06);
+}
+
+.hero-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 96px;
+  padding: 12px 16px;
+}
+
+.hero-stat-split {
+  width: 1px;
+  align-self: stretch;
+  margin: 12px 0;
+  background: #e8eef6;
+}
+
+.hero-stat-val {
+  font-size: 20px;
+  font-weight: 900;
+  color: var(--ch-primary);
+  line-height: 1.15;
+}
+
+.hero-stat-val--open {
+  color: #10b981;
+}
+
+.hero-stat-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ch-muted);
+}
+
+/* ========== 主面板 ========== */
+.chat-panel {
+  background: #fff;
+  border: 1px solid var(--ch-border);
+  border-radius: var(--ch-radius);
+  box-shadow: var(--ch-shadow);
+  overflow: hidden;
+}
+
+.chat-filter {
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid #f0f2f7;
+}
+
+.chat-filter-head {
   display: flex;
   align-items: center;
-  flex: 1;
-  min-width: 220px;
-  max-width: 360px;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 
-.search-icon {
-  position: absolute;
-  left: 14px;
-  color: #94a3b8;
-  pointer-events: none;
-}
-
-.filter-input {
-  width: 100%;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 11px 14px 11px 40px;
-  font-size: 13px;
-  outline: none;
-  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
-  background: #f8fafc;
+.chat-filter-title {
+  font-size: 14px;
+  font-weight: 800;
   color: var(--ch-ink);
 }
 
-.filter-input:focus {
-  border-color: rgba(47, 109, 246, 0.45);
-  background: #fff;
-  box-shadow: 0 0 0 4px rgba(47, 109, 246, 0.1);
+.chat-filter-count {
+  font-size: 12px;
+  color: var(--ch-muted);
 }
 
-.filter-select {
-  width: 132px;
-  flex-shrink: 0;
+.chat-filter-count strong {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--ch-primary);
 }
 
-.filter-select :deep(.el-select__wrapper) {
-  min-height: 42px;
-  border-radius: 12px;
-  box-shadow: 0 0 0 1px #e2e8f0 inset;
-  background: #f8fafc;
+.chat-filter-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px auto auto;
+  gap: 8px;
+  align-items: center;
 }
 
-.filter-actions {
+.chat-search-field {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-shrink: 0;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px 0 12px;
+  border-radius: 10px;
+  border: 1.5px solid #e4ebf5;
+  background: #f8faff;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
 
-.btn-search,
-.btn-reset {
-  min-height: 42px;
-  padding: 0 20px;
-  border-radius: 12px;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
-}
-
-.btn-search {
-  background: var(--goosd-primary);
-  color: #fff;
-  border: none;
-}
-
-.btn-search:hover {
-  transform: translateY(-1px);
-  box-shadow: var(--goosd-btn-shadow-hover);
-  background: var(--goosd-primary-dark);
-}
-
-.btn-reset {
+.chat-search-field:focus-within {
+  border-color: var(--ch-primary);
   background: #fff;
-  color: #475569;
-  border: 1px solid #e2e8f0;
+  box-shadow: 0 0 0 3px rgba(47, 109, 246, 0.1);
 }
 
-.btn-reset:hover {
-  background: #f8fafc;
+.chat-search-icon {
+  flex-shrink: 0;
+  color: #9aa5b5;
 }
 
-.filter-total {
+.chat-search-input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
   font-size: 13px;
-  color: var(--ch-muted);
-  white-space: nowrap;
-  padding: 8px 14px;
-  border-radius: 999px;
-  background: #f8fafc;
-  border: 1px solid var(--ch-line);
+  color: var(--ch-ink);
 }
 
-.filter-total strong {
+.chat-filter-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.chat-filter-select :deep(.el-select__wrapper) {
+  min-height: 36px;
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px #e4ebf5 inset;
+  background: #f8faff;
+}
+
+.cf-btn {
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cf-btn--primary {
+  border: none;
+  background: var(--ch-primary);
+  color: #fff;
+}
+
+.cf-btn--primary:hover {
+  background: #2558d4;
+}
+
+.cf-btn--ghost {
+  border: 1px solid #e4ebf5;
+  background: #fff;
+  color: #425066;
+}
+
+.cf-btn--ghost:hover {
+  border-color: #c7d7ff;
+  background: #f5f8ff;
   color: var(--ch-primary);
-  font-weight: 800;
 }
 
 /* ========== 会话列表 ========== */
 .conv-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
+  padding: 12px 14px 14px;
+  min-height: 200px;
+  background: linear-gradient(180deg, #f8faff 0%, #f4f7fb 100%);
 }
 
 .conv-card {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 16px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
   background: #fff;
-  border-radius: 18px;
-  padding: 18px 20px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  box-shadow: 0 2px 10px rgba(21, 32, 51, 0.05);
   cursor: pointer;
-  transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
-  box-shadow: 0 8px 28px rgba(21, 32, 51, 0.04);
-  border: 1px solid var(--ch-line);
+  transition: border-color 180ms ease, box-shadow 180ms ease;
 }
 
 .conv-card:hover {
-  border-color: rgba(47, 109, 246, 0.16);
-  box-shadow: 0 16px 40px rgba(47, 109, 246, 0.1);
-  transform: translateY(-2px);
+  border-color: #b8ccfa;
+  box-shadow: 0 6px 20px rgba(47, 109, 246, 0.08);
+}
+
+.conv-card.is-open {
+  border-color: #bbf7d0;
 }
 
 .conv-avatar {
-  width: 48px;
-  height: 48px;
-  border-radius: 15px;
-  background: linear-gradient(135deg, var(--ch-primary), #8b7bf7);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 18px;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(47, 109, 246, 0.1);
+  color: var(--ch-primary);
+  border: 1px solid rgba(47, 109, 246, 0.12);
+  display: grid;
+  place-items: center;
+  font-size: 14px;
   font-weight: 800;
   flex-shrink: 0;
-  box-shadow: 0 8px 18px rgba(47, 109, 246, 0.22);
+}
+
+.conv-card.is-open .conv-avatar {
+  color: #059669;
+  background: #ecfdf3;
+  border-color: #bbf7d0;
 }
 
 .conv-body {
   min-width: 0;
+  flex: 1;
+  padding-top: 1px;
 }
 
-.conv-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-
-.conv-head {
+.conv-title-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px;
   min-width: 0;
 }
 
 .conv-name {
+  font-size: 14px;
   font-weight: 800;
-  font-size: 15px;
   color: var(--ch-ink);
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 140px;
 }
 
 .conv-time {
+  margin-left: auto;
   flex-shrink: 0;
   font-size: 12px;
-  font-weight: 600;
-  color: #94a3b8;
+  color: var(--ch-muted);
 }
 
 .conv-status-pill {
   font-size: 11px;
-  padding: 3px 10px;
+  padding: 2px 8px;
   border-radius: 999px;
   font-weight: 700;
   border: 1px solid;
-  letter-spacing: 0.02em;
   flex-shrink: 0;
 }
 
@@ -681,48 +684,22 @@ onMounted(() => { fetchConversations() })
   padding: 2px 8px;
 }
 
-.conv-preview {
+.conv-preview-line {
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-top: 6px;
   min-width: 0;
-  margin-bottom: 8px;
-}
-
-.conv-preview-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 9px;
-  flex-shrink: 0;
-  color: var(--ch-primary);
-  background: rgba(47, 109, 246, 0.08);
-}
-
-.conv-preview--audio .conv-preview-icon {
-  color: #8b5cf6;
-  background: rgba(139, 92, 246, 0.1);
-}
-
-.conv-preview--image .conv-preview-icon {
-  color: #0ea5e9;
-  background: rgba(14, 165, 233, 0.1);
-}
-
-.conv-preview--empty .conv-preview-icon {
-  color: #94a3b8;
-  background: #f1f5f9;
 }
 
 .conv-last-msg {
-  font-size: 13px;
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
   color: #64748b;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  line-height: 1.45;
 }
 
 .conv-preview--audio .conv-last-msg,
@@ -732,82 +709,32 @@ onMounted(() => { fetchConversations() })
   font-weight: 600;
 }
 
-.conv-meta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .meta-chip {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px 10px;
+  flex-shrink: 0;
+  padding: 2px 8px;
   border-radius: 999px;
   font-size: 11px;
-  font-weight: 700;
-  color: #64748b;
-  background: #f8fafc;
-  border: 1px solid var(--ch-line);
+  font-weight: 600;
+  color: var(--ch-muted);
+  background: #f1f5f9;
 }
 
-.conv-action {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  background: #f8fafc;
+.conv-chevron {
   flex-shrink: 0;
-  transition: background 0.2s, transform 0.2s;
+  margin-top: 4px;
+  color: #c0c9d6;
+  transition: color 180ms ease, transform 180ms ease;
 }
 
-.conv-arrow {
-  color: #94a3b8;
-  transition: color 0.2s, transform 0.2s;
-}
-
-.conv-card:hover .conv-action {
-  background: rgba(47, 109, 246, 0.08);
-}
-
-.conv-card:hover .conv-arrow {
+.conv-card:hover .conv-chevron {
   color: var(--ch-primary);
   transform: translateX(2px);
 }
 
-/* ========== 空状态 & 加载 ========== */
 .empty-state {
-  text-align: center;
-  padding: 80px 20px;
-  color: #9aa5b5;
-}
-
-.empty-icon {
-  margin-bottom: 16px;
-  color: #d0d7e2;
-}
-
-.empty-state p {
-  font-size: 16px;
-  font-weight: 600;
-  color: #7a8599;
-  margin: 0 0 6px;
-}
-
-.empty-state span {
-  font-size: 13px;
-  color: #b0b8c5;
-}
-
-.loading-state {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 80px 0;
-  color: #9aa5b5;
-  font-size: 14px;
+  background: #fff;
+  border: 1px dashed #dce4f0;
+  border-radius: 14px;
 }
 
 .spinner {
@@ -820,15 +747,19 @@ onMounted(() => { fetchConversations() })
 }
 
 @keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+  to { transform: rotate(360deg); }
 }
 
 .pagination-wrap {
   display: flex;
   justify-content: flex-end;
-  margin-top: 20px;
+  padding: 12px 16px 14px;
+  border-top: 1px solid #f0f2f7;
+  background: #fff;
+}
+
+.pagination-wrap :deep(.el-pagination.is-background .el-pager li.is-active) {
+  background: var(--ch-primary);
 }
 
 /* ========== 抽屉 ========== */
@@ -1161,77 +1092,77 @@ onMounted(() => { fetchConversations() })
 /* ========== 移动端 ========== */
 @media (max-width: 760px) {
   .chat-history-page {
-    padding: 0 12px 40px;
+    padding: 12px 12px 40px;
   }
 
-  .stats-row {
-    grid-template-columns: 1fr;
-    gap: 10px;
+  .hero-content {
+    padding: 14px 14px 12px;
   }
 
-  .stat-card {
-    padding: 18px;
-  }
-
-  .filter-bar {
+  .hero-row {
     flex-direction: column;
-    gap: 12px;
     align-items: stretch;
-    padding: 14px;
+    gap: 14px;
   }
 
-  .filter-left {
-    flex-wrap: wrap;
-    gap: 8px;
+  .hero-title {
+    font-size: 18px;
   }
 
-  .search-wrap {
-    width: 100%;
-    max-width: none;
-  }
-
-  .filter-input {
-    font-size: 12px !important;
-    padding: 10px 12px 10px 36px;
-  }
-
-  .filter-select {
-    width: 100%;
-  }
-
-  .filter-actions {
-    width: 100%;
-  }
-
-  .btn-search,
-  .btn-reset {
-    flex: 1;
-  }
-
-  .filter-total {
-    text-align: center;
+  .hero-desc {
     font-size: 12px;
   }
 
+  .hero-stats {
+    width: 100%;
+  }
+
+  .hero-stat {
+    flex: 1;
+    min-width: 0;
+    padding: 10px 12px;
+  }
+
+  .hero-stat-val {
+    font-size: 18px;
+  }
+
+  .chat-filter {
+    padding: 12px;
+  }
+
+  .chat-filter-bar {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .chat-search-field {
+    grid-column: 1 / -1;
+  }
+
+  .chat-filter-select {
+    grid-column: 1 / -1;
+  }
+
+  .cf-btn {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .conv-list {
+    padding: 10px 10px 12px;
+    gap: 8px;
+  }
+
   .conv-card {
-    padding: 14px 16px;
-    gap: 12px;
+    padding: 9px 10px;
   }
 
-  .conv-avatar {
-    width: 42px;
-    height: 42px;
-    font-size: 16px;
-    border-radius: 13px;
-  }
-
-  .conv-top {
-    flex-direction: column;
-    gap: 4px;
+  .conv-name {
+    max-width: 100px;
   }
 
   .conv-time {
-    align-self: flex-start;
+    margin-left: 0;
   }
 
   .chat-drawer {

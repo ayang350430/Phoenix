@@ -3,6 +3,8 @@ import { createTask, getTaskStatus, buildTaskPayload } from './xhsApi.js'
 import { fetchNoteId, fetchNoteBasic, fetchNoteViewCount, fetchNoteLikeCount } from './noteApi.js'
 import { clawbackAgentCommission } from './agentCommission.js'
 import { calcRefundAmount } from '../utils/refundAmount.js'
+import { getOrderChargeRecord, hasSuccessfulRefund } from '../utils/orderCharge.js'
+import { uniqueCode } from '../utils/idGen.js'
 
 /**
  * 订单同步调度器
@@ -24,8 +26,16 @@ async function autoRefundOrder(order, reason) {
   const trx = await db.transaction()
   try {
     const now = new Date()
-    const chargeRec = await trx('account_records')
-      .where({ order_id: order.id, record_type: 'order_charge' }).first()
+
+    // 幂等 + 防并发：锁定订单行，已退款/已有退款流水则跳过，避免与人工退款重复打款
+    const locked = await trx('orders').where({ id: order.id }).forUpdate().first()
+    if (!locked || ['refunded', 'cancelled'].includes(locked.order_status) || await hasSuccessfulRefund(trx, locked)) {
+      await trx.commit()
+      return
+    }
+    order = locked
+
+    const chargeRec = await getOrderChargeRecord(trx, order)
 
     if (!chargeRec) {
       await trx('orders').where({ id: order.id }).update({
@@ -52,7 +62,7 @@ async function autoRefundOrder(order, reason) {
     const afterBal = Math.round((beforeBal + refundAmount) * 10000) / 10000
 
     await trx('account_records').insert({
-      record_no: `AUTOREFUND-${Date.now()}-${order.id}`,
+      record_no: await uniqueCode(trx, 'account_records', 'record_no'),
       user_id: order.user_id,
       record_type: 'refund',
       direction: 'credit',

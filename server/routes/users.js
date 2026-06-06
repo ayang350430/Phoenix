@@ -3,6 +3,7 @@ import db from '../db.js'
 import User from '../models/User.js'
 import { authRequired, adminRequired, roleRequired } from '../middleware/auth.js'
 import { validate } from '../middleware/validate.js'
+import { uniqueCode } from '../utils/idGen.js'
 
 const router = Router()
 
@@ -138,10 +139,9 @@ router.put('/:id/balance', adminRequired, validate({ body: ['amount', 'remark'] 
         })
       }
 
-      // 记录流水（用 UUID 防止碰撞）
-      const { randomUUID } = await import('crypto')
+      // 记录流水（短编号，事务内查重保证唯一）
       await trx('account_records').insert({
-        record_no: `ADMIN_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
+        record_no: await uniqueCode(trx, 'account_records', 'record_no'),
         user_id: userId,
         record_type: num >= 0 ? 'admin_add' : 'admin_deduct',
         direction: num >= 0 ? 'in' : 'out',

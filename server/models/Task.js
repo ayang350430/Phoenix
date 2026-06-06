@@ -45,15 +45,15 @@ const Task = {
         .max('target_type as target_type')
         .max('product_id as product_id')
         .groupBy('batch_id')
+      // 按 order_no 关联（而非会被复用的 order_id），孤儿扣费行因 order_no 对不上而被自动排除，
+      // 避免 SUM 把孤儿行重复累加导致「实付合计」虚高
       const amountMap = await db('account_records')
-        .whereIn('order_id', function () {
-          this.select('id').from('orders').whereIn('batch_id', batchIds)
-        })
-        .where('record_type', 'order_charge')
-        .where('status', 'success')
+        .join('orders', 'orders.order_no', 'account_records.order_no')
+        .where('account_records.record_type', 'order_charge')
+        .where('account_records.status', 'success')
+        .whereIn('orders.batch_id', batchIds)
         .select('orders.batch_id')
         .sum('account_records.actual_paid_amount as total_paid')
-        .leftJoin('orders', 'orders.id', 'account_records.order_id')
         .groupBy('orders.batch_id')
       // 补充进度（completed_quantity / ordered_quantity）
       const progressMap = await db('orders')
@@ -134,17 +134,18 @@ const Task = {
   async listOrders({ userIds, page = 1, pageSize = 20, batch_id, order_status, target_type, order_no, start, end }) {
     const offset = (page - 1) * pageSize
 
-    // 每个订单的实付金额（下单扣费）
+    // 每个订单的实付金额（下单扣费）—— 按 order_no 聚合并关联，排除 order_id 复用产生的孤儿行
     const chargeSummary = db('account_records')
       .where('record_type', 'order_charge')
-      .select('order_id')
+      .where('status', 'success')
+      .select('order_no')
       .max('actual_paid_amount as actual_paid_amount')
-      .groupBy('order_id')
+      .groupBy('order_no')
 
     const query = db('orders')
       .leftJoin('products', 'products.id', 'orders.product_id')
       .leftJoin('order_batches', 'order_batches.id', 'orders.batch_id')
-      .leftJoin(chargeSummary.as('charge'), 'charge.order_id', 'orders.id')
+      .leftJoin(chargeSummary.as('charge'), 'charge.order_no', 'orders.order_no')
     applyUserFilter(query, userIds, 'orders.user_id')
     if (batch_id) query.andWhere('orders.batch_id', batch_id)
     if (order_status) query.andWhere('orders.order_status', order_status)
@@ -157,6 +158,7 @@ const Task = {
       .select(
         'orders.*',
         'products.name as product_name',
+        'products.description as product_description',
         'products.api_endpoint as product_api_endpoint',
         'order_batches.batch_no',
         'charge.actual_paid_amount'
@@ -176,7 +178,20 @@ const Task = {
   },
 
   async getOrder(id) {
-    return db('orders').where({ id }).first()
+    // 关联商品，带出商品名与描述（详情页展示）
+    const order = await db('orders')
+      .leftJoin('products', 'products.id', 'orders.product_id')
+      .where('orders.id', id)
+      .select('orders.*', 'products.name as product_name', 'products.description as product_description')
+      .first()
+    if (!order) return null
+    // 补上实付金额（按 order_no 取权威扣费行），否则订单详情「付款」会显示 ¥0
+    const charge = await db('account_records')
+      .where({ order_no: order.order_no, record_type: 'order_charge', status: 'success' })
+      .max('actual_paid_amount as actual_paid_amount')
+      .first()
+    order.actual_paid_amount = charge?.actual_paid_amount ?? 0
+    return order
   },
 
   async getOrderByNo(order_no) {
@@ -235,11 +250,64 @@ const Task = {
 
     const rows = await base()
       .clone()
-      .select('ar.*', 'u.username', 'u.nickname', 'u.real_name')
+      .leftJoin('orders as o', 'o.id', 'ar.order_id')
+      .leftJoin('users as sub', 'sub.id', 'o.user_id')
+      .select(
+        'ar.*',
+        'u.username',
+        'u.nickname',
+        'u.real_name',
+        'sub.username as subordinate_username',
+        'sub.nickname as subordinate_nickname',
+        'sub.real_name as subordinate_real_name'
+      )
       .orderBy('ar.created_at', 'desc')
       .limit(pageSize).offset(offset)
+
+    const commOrderNos = [
+      ...new Set(
+        rows
+          .filter(r => ['agent_commission', 'agent_commission_refund'].includes(r.record_type) && r.order_no)
+          .map(r => r.order_no)
+      )
+    ]
+    const commissionByOrderNo = {}
+    if (commOrderNos.length > 0) {
+      const commRows = await db('account_records')
+        .whereIn('order_no', commOrderNos)
+        .where({ record_type: 'agent_commission', status: 'success' })
+        .select('order_no', 'actual_paid_amount', 'net_amount', 'ordered_quantity')
+      for (const c of commRows) {
+        const amt = Math.abs(parseFloat(c.actual_paid_amount) || parseFloat(c.net_amount) || 0)
+        commissionByOrderNo[c.order_no] = {
+          total: Math.round(amt * 10000) / 10000,
+          quantity: Number(c.ordered_quantity) || 0
+        }
+      }
+    }
+
+    const data = rows.map(r => {
+      const row = { ...r }
+      if (['agent_commission', 'agent_commission_refund'].includes(r.record_type)) {
+        const comm = commissionByOrderNo[r.order_no]
+        if (comm) {
+          row.commission_total = comm.total
+          row.commission_quantity = comm.quantity
+        }
+        if (r.record_type === 'agent_commission') {
+          const earned = Math.abs(parseFloat(r.actual_paid_amount) || parseFloat(r.net_amount) || 0)
+          row.commission_total = row.commission_total ?? (earned > 0 ? Math.round(earned * 10000) / 10000 : null)
+        }
+        if (r.record_type === 'agent_commission_refund') {
+          const claw = Math.abs(parseFloat(r.actual_paid_amount) || parseFloat(r.refund_amount) || parseFloat(r.net_amount) || 0)
+          row.clawback_amount = Math.round(claw * 10000) / 10000
+        }
+      }
+      return row
+    })
+
     const [{ total }] = await base().clone().count('ar.id as total')
-    return { rows, total }
+    return { rows: data, total }
   },
 
   // ========== 每日趋势 ==========

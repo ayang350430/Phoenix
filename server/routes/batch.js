@@ -10,6 +10,8 @@ import { filterLookupOrders } from '../services/orderLookupPolicy.js'
 import { creditAgentCommission, clawbackAgentCommission } from '../services/agentCommission.js'
 import { refreshBatchStatus } from '../services/batchStatus.js'
 import { calcRefundAmount } from '../utils/refundAmount.js'
+import { getOrderChargeRecord, hasSuccessfulRefund } from '../utils/orderCharge.js'
+import { uniqueCode } from '../utils/idGen.js'
 import db from '../db.js'
 
 const router = Router()
@@ -328,9 +330,8 @@ router.post('/submit', authRequired, async (req, res) => {
       }
 
       const now = new Date()
-      const ts = Date.now().toString(36).toUpperCase()
-      const hex = crypto.randomBytes(3).toString('hex').toUpperCase()
-      const batchNo = `BATCH-${ts}-${hex}`
+      // 短编号：4 字母+6 数字（事务内查重保证唯一）
+      const batchNo = await uniqueCode(trx, 'order_batches', 'batch_no')
       const batchId = crypto.randomUUID()
 
       // 1. 创建批次
@@ -360,8 +361,7 @@ router.post('/submit', authRequired, async (req, res) => {
       const createdOrders = []
       for (let i = 0; i < validLines.length; i++) {
         const line = validLines[i]
-        const orderTs = Date.now()
-        const orderNo = `ORDER-${orderTs}-${String(i + 1).padStart(4, '0')}`
+        const orderNo = await uniqueCode(trx, 'orders', 'order_no')
         const itemCost = Math.round(line.quantity * unitPrice * 10000) / 10000
 
         // 快照数据；快照失败时，沿用提交前预校验已经解析到的笔记元数据
@@ -395,7 +395,7 @@ router.post('/submit', authRequired, async (req, res) => {
         })
 
         // 3. 账务记录
-        const recNo = `REC-${orderTs}-${String(i + 1).padStart(4, '0')}`
+        const recNo = await uniqueCode(trx, 'account_records', 'record_no')
         const afterBalance = Math.round((runningBalance - itemCost) * 10000) / 10000
 
         await trx('account_records').insert({
@@ -497,18 +497,19 @@ router.get('/:id/orders', authRequired, async (req, res) => {
       }
     }
 
+    // 按 order_no 聚合扣费（排除 order_id 复用导致的孤儿行），并按 order_no 关联订单
     const chargeSummary = db('account_records')
       .where('record_type', 'order_charge')
       .where('status', 'success')
-      .select('order_id')
+      .select('order_no')
       .max('actual_paid_amount as actual_paid_amount')
       .max('payable_amount as payable_amount')
       .max('discount_rate as discount_rate')
       .max('status as charge_status')
-      .groupBy('order_id')
+      .groupBy('order_no')
 
     const orders = await db('orders')
-      .leftJoin(chargeSummary.as('charge_summary'), 'charge_summary.order_id', 'orders.id')
+      .leftJoin(chargeSummary.as('charge_summary'), 'charge_summary.order_no', 'orders.order_no')
       .leftJoin('products', 'products.id', 'orders.product_id')
       .where('orders.batch_id', batchDbId)
       .select(
@@ -518,6 +519,7 @@ router.get('/:id/orders', authRequired, async (req, res) => {
         'charge_summary.discount_rate',
         'charge_summary.charge_status',
         'products.name as product_name',
+        'products.description as product_description',
         'products.api_endpoint as product_api_endpoint'
       )
       .orderBy('orders.batch_item_id', 'asc')
@@ -702,9 +704,11 @@ router.post('/:id/refund', authRequired, async (req, res) => {
         let totalRefund = 0
 
         for (let i = 0; i < orders.length; i++) {
-          const order = orders[i]
-          const chargeRec = await trx('account_records')
-            .where({ order_id: order.id, record_type: 'order_charge' }).first()
+          // 幂等 + 防并发：锁定订单行后重新判定，已退款/已有退款流水则跳过
+          const order = await trx('orders').where({ id: orders[i].id }).forUpdate().first()
+          if (!order || ['refunded', 'cancelled'].includes(order.order_status)) continue
+          if (await hasSuccessfulRefund(trx, order)) continue
+          const chargeRec = await getOrderChargeRecord(trx, order)
           if (!chargeRec) continue
 
           const unitPrice = parseFloat(chargeRec.original_unit_price) || 0
@@ -723,7 +727,7 @@ router.post('/:id/refund', authRequired, async (req, res) => {
           const afterBal = Math.round((beforeBal + refundAmount) * 10000) / 10000
 
           await trx('account_records').insert({
-            record_no: `REFUND-${ts}-${String(i + 1).padStart(4, '0')}`,
+            record_no: await uniqueCode(trx, 'account_records', 'record_no'),
             user_id: userId,
             record_type: 'refund',
             direction: 'credit',
@@ -776,8 +780,7 @@ router.post('/:id/refund', authRequired, async (req, res) => {
 
     let estimatedRefund = 0
     for (const order of orders) {
-      const chargeRec = await db('account_records')
-        .where({ order_id: order.id, record_type: 'order_charge' }).first()
+      const chargeRec = await getOrderChargeRecord(db, order)
       if (!chargeRec) continue
       const refundQty = Math.max(0, (order.ordered_quantity || 0) - (order.completed_quantity || 0))
       estimatedRefund += calcRefundAmount(chargeRec, refundQty, order.ordered_quantity || 0)
@@ -832,9 +835,12 @@ router.post('/orders/:id/refund', authRequired, async (req, res) => {
     if (['refunded', 'cancelled', 'completed'].includes(order.order_status)) {
       return res.status(400).json({ code: 400, message: '该订单不可退款' })
     }
+    // 幂等：已有成功退款流水则拒绝再申请（防止状态读取竞态下重复生成退款申请）
+    if (await hasSuccessfulRefund(db, order)) {
+      return res.status(400).json({ code: 400, message: '该订单已退款，无需重复申请' })
+    }
 
-    const chargeRec = await db('account_records')
-      .where({ order_id: orderId, record_type: 'order_charge' }).first()
+    const chargeRec = await getOrderChargeRecord(db, order)
     const unitPrice = parseFloat(chargeRec?.original_unit_price) || 0
     const refundQty = Math.max(0, (order.ordered_quantity || 0) - (order.completed_quantity || 0))
     const refundAmount = calcRefundAmount(chargeRec, refundQty, order.ordered_quantity || 0)
@@ -850,6 +856,13 @@ router.post('/orders/:id/refund', authRequired, async (req, res) => {
         const now = new Date()
         const ts = Date.now()
 
+        // 幂等 + 防并发：锁定订单行，已退款/已有退款流水则直接返回，避免重复退款
+        const locked = await trx('orders').where({ id: orderId }).forUpdate().first()
+        if (!locked || ['refunded', 'cancelled'].includes(locked.order_status) || await hasSuccessfulRefund(trx, locked)) {
+          await trx.rollback()
+          return res.json({ code: 0, message: '该订单已退款，无需重复操作', refunded: true })
+        }
+
         await trx('orders').where({ id: orderId }).update({
           order_status: 'refunded', refunded_quantity: refundQty, updated_at: now
         })
@@ -859,7 +872,7 @@ router.post('/orders/:id/refund', authRequired, async (req, res) => {
         const afterBal = Math.round((beforeBal + refundAmount) * 10000) / 10000
 
         await trx('account_records').insert({
-          record_no: `REFUND-${ts}-0001`,
+          record_no: await uniqueCode(trx, 'account_records', 'record_no'),
           user_id: userId,
           record_type: 'refund',
           direction: 'credit',
@@ -1024,7 +1037,7 @@ router.get('/problem-orders', authRequired, adminRequired, async (req, res) => {
     const query = db('orders')
       .leftJoin('order_batches', 'order_batches.id', 'orders.batch_id')
       .leftJoin('account_records', function () {
-        this.on('account_records.order_id', '=', 'orders.id')
+        this.on('account_records.order_no', '=', 'orders.order_no')
           .andOn('account_records.record_type', '=', db.raw("'order_charge'"))
       })
       .where(function () {

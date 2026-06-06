@@ -1,5 +1,6 @@
 <script setup>
 import { ref, inject } from 'vue'
+import EmptyState from './EmptyState.vue'
 
 const { getToken, isAdmin } = inject('workspace')
 
@@ -51,12 +52,6 @@ function showToast(msg) {
   toastMsg.value = msg
   clearTimeout(toastTimer)
   toastTimer = setTimeout(() => { toastMsg.value = '' }, 3000)
-}
-
-function progressColor(p) {
-  if (p >= 100) return '#42c978'
-  if (p >= 50) return '#5b8def'
-  return '#f5a623'
 }
 
 async function doLookup() {
@@ -264,7 +259,7 @@ function exportCSV() {
           <span v-for="(u, i) in lookupNotFoundUrls" :key="i" class="nf-url">{{ u }}</span>
         </div>
 
-        <div v-if="lookupResults.length === 0" class="empty-state">没有查到匹配的订单</div>
+        <EmptyState v-if="lookupResults.length === 0" class="empty-state" text="没有查到匹配的订单" />
 
         <div v-else>
           <div class="result-toolbar">
@@ -339,10 +334,10 @@ function exportCSV() {
               <div class="oc-progress-wrap">
                 <div class="oc-progress-top">
                   <span>完成进度</span>
-                  <strong :style="{ color: progressColor(o.progress) }">{{ o.progress }}%</strong>
+                  <strong class="oc-progress-pct">{{ o.progress }}%</strong>
                 </div>
                 <div class="oc-progress-bar">
-                  <div class="oc-progress-fill" :style="{ width: o.progress + '%', background: progressColor(o.progress) }"></div>
+                  <div class="oc-progress-fill" :style="{ width: o.progress + '%' }"></div>
                 </div>
               </div>
 
@@ -679,9 +674,16 @@ function exportCSV() {
   overflow: hidden;
 }
 
+.oc-progress-pct {
+  font-size: 12px;
+  font-weight: 900;
+  color: #2f6df6;
+}
+
 .oc-progress-fill {
   height: 100%;
   border-radius: 999px;
+  background: #2f6df6;
   transition: width 400ms ease;
   min-width: 0;
 }

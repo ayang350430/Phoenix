@@ -615,6 +615,13 @@ onMounted(() => {
             <strong>{{ minQuantity }}</strong>
           </div>
         </div>
+        <div v-if="activeProduct.description" class="cs-desc-card">
+          <div class="cs-desc-head">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            <span class="cs-desc-label">商品描述</span>
+          </div>
+          <p class="cs-desc-text">{{ activeProduct.description }}</p>
+        </div>
       </div>
 
       <div class="step-actions">
@@ -1487,6 +1494,7 @@ onMounted(() => {
 /* ========== 选择摘要 ========== */
 .choice-summary {
   padding: 16px 18px;
+  margin-bottom: 16px;
   border-radius: 12px;
   border: 1px solid #e4ebf7;
   background: linear-gradient(135deg, #f8faff 0%, #f0f5ff 100%);
@@ -1539,6 +1547,43 @@ onMounted(() => {
 
 .cs-item strong.cs-price {
   color: var(--goosd-primary);
+}
+
+.cs-desc-card {
+  margin: 14px 0 0;
+  padding: 10px 12px 11px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid #e4ecff;
+}
+
+.cs-desc-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 7px;
+}
+
+.cs-desc-head svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  color: var(--goosd-primary);
+}
+
+.cs-desc-label {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--goosd-primary);
+  letter-spacing: 0.03em;
+}
+
+.cs-desc-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #425066;
+  word-break: break-word;
 }
 
 /* ========== 格式提示 & 编辑区 ========== */

@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { authRequired } from '../middleware/auth.js'
 import AgentPrice from '../models/AgentPrice.js'
 import Product from '../models/Product.js'
+import { uniqueCode } from '../utils/idGen.js'
 import db from '../db.js'
 
 const router = Router()
@@ -139,11 +140,10 @@ router.post('/transfer', agentRequired, async (req, res) => {
       const userAfter = Math.round((userBefore + amount) * 10000) / 10000
 
       const now = new Date()
-      const ts = Date.now()
 
       // 代理：扣款流水 + 扣余额
       await trx('account_records').insert({
-        record_no: `XFEROUT-${ts}-${agentId}`,
+        record_no: await uniqueCode(trx, 'account_records', 'record_no'),
         user_id: agentId, record_type: 'agent_transfer_out', direction: 'out', status: 'success',
         original_total_amount: amount, payable_amount: amount, actual_paid_amount: amount, refund_amount: 0,
         net_amount: -amount, before_available_amount: agentBefore, after_available_amount: agentAfter,
@@ -153,7 +153,7 @@ router.post('/transfer', agentRequired, async (req, res) => {
 
       // 下级：入账流水 + 加余额
       await trx('account_records').insert({
-        record_no: `XFERIN-${ts}-${userId}`,
+        record_no: await uniqueCode(trx, 'account_records', 'record_no'),
         user_id: userId, record_type: 'agent_transfer_in', direction: 'in', status: 'success',
         original_total_amount: amount, payable_amount: amount, actual_paid_amount: amount, refund_amount: 0,
         net_amount: amount, before_available_amount: userBefore, after_available_amount: userAfter,

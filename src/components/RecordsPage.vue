@@ -7,6 +7,7 @@ import 'element-plus/es/components/message-box/style/css'
 import 'element-plus/es/components/pagination/style/css'
 import 'element-plus/es/components/date-picker/style/css'
 import { getUserOrderStatusDisplay } from '../utils/orderStatusDisplay.js'
+import EmptyState from './EmptyState.vue'
 
 // v-click-outside 指令
 const vClickOutside = {
@@ -121,7 +122,7 @@ function batchStatusView(batch) {
 }
 
 function batchProgressTone(batch) {
-  return canViewOrderStatus.value ? sc(batch?.status).color : 'linear-gradient(90deg, #ec4f8b 0%, #2f6df6 100%)'
+  return canViewOrderStatus.value ? sc(batch?.status).color : 'var(--rp-primary)'
 }
 
 function batchBorderTone(batch) {
@@ -151,6 +152,19 @@ function fmtTime(dt) {
 
 function fmtMoney(v) {
   return (parseFloat(v) || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+/** 订单实付：优先后端 actual_paid_amount，兼容旧数据缺字段 */
+function orderPaidAmount(order) {
+  if (!order) return 0
+  for (const key of ['actual_paid_amount', 'payable_amount', 'original_total_amount']) {
+    const n = parseFloat(order[key])
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  const qty = Number(order.ordered_quantity) || 0
+  const unit = parseFloat(order.original_unit_price)
+  if (qty > 0 && Number.isFinite(unit) && unit > 0) return Math.round(qty * unit * 10000) / 10000
+  return 0
 }
 
 // ========== API ==========
@@ -195,7 +209,7 @@ function orderListBorderTone(order) {
 }
 
 function orderListProgressTone(order) {
-  return canViewOrderStatus.value ? orderListStatusView(order).color : 'linear-gradient(90deg, #ec4f8b 0%, #2f6df6 100%)'
+  return canViewOrderStatus.value ? orderListStatusView(order).color : 'var(--rp-primary)'
 }
 
 async function fetchOrders() {
@@ -563,11 +577,11 @@ function orderStatusView(order) {
 }
 
 function orderProgressTone(order) {
-  return canViewOrderStatus.value ? osc(order?.order_status).color : 'linear-gradient(90deg, #ec4f8b 0%, #2f6df6 100%)'
+  return canViewOrderStatus.value ? osc(order?.order_status).color : 'var(--rp-primary)'
 }
 
 function orderProgressTextColor(order) {
-  return canViewOrderStatus.value ? osc(order?.order_status).color : '#5b8def'
+  return canViewOrderStatus.value ? osc(order?.order_status).color : 'var(--rp-primary)'
 }
 
 function orderAvatarUrl(order) {
@@ -1018,7 +1032,7 @@ function supBatchProgress(sb) {
 }
 
 function supBatchProgressTone() {
-  return 'linear-gradient(90deg, #ec4f8b 0%, #2f6df6 100%)'
+  return 'var(--rp-primary)'
 }
 
 async function fetchSupplements() {
@@ -1213,19 +1227,48 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="records-page">
-    <header class="page-hero">
+  <div class="records-page" :class="{ 'records-page--user-orders': isRegularUserOrderView }">
+    <header class="page-hero" :class="{ 'page-hero--user': isRegularUserOrderView }">
       <div class="hero-bg" aria-hidden="true"></div>
-      <div class="hero-content">
-        <span class="hero-badge">{{ isMyOrdersPage ? '订单中心' : '记录中心' }}</span>
-        <h1 class="hero-title">{{ pageHeroTitle }}</h1>
-        <p class="hero-desc">{{ pageHeroDesc }}</p>
+      <div v-if="isRegularUserOrderView" class="hero-content user-hero-row">
+        <div class="user-hero-main">
+          <span class="hero-badge">订单中心</span>
+          <h1 class="hero-title">{{ pageHeroTitle }}</h1>
+          <p class="hero-desc">{{ pageHeroDesc }}</p>
+        </div>
+        <div class="user-hero-cards" role="group" aria-label="订单统计">
+          <div class="user-stat-card user-stat-card--orders">
+            <div class="user-stat-icon icon-orders" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+            </div>
+            <div class="user-stat-body">
+              <strong class="user-stat-val">{{ orderTotal }}</strong>
+              <span class="user-stat-label">订单总数</span>
+            </div>
+          </div>
+          <div class="user-stat-card user-stat-card--spent">
+            <div class="user-stat-icon icon-spent" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+            </div>
+            <div class="user-stat-body">
+              <strong class="user-stat-val user-stat-val--money">¥{{ fmtMoney(totalSpent) }}</strong>
+              <span class="user-stat-label">累计消费</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div v-else class="hero-inner">
+        <div class="hero-content">
+          <span class="hero-badge">{{ isMyOrdersPage ? '订单中心' : '记录中心' }}</span>
+          <h1 class="hero-title">{{ pageHeroTitle }}</h1>
+          <p class="hero-desc">{{ pageHeroDesc }}</p>
+        </div>
       </div>
     </header>
 
     <!-- 顶部统计 -->
-    <div class="stats-row">
-      <div v-if="!isRegularUserOrderView" class="stat-card card-batch">
+    <div v-if="!isRegularUserOrderView" class="stats-row">
+      <div class="stat-card card-batch">
         <div class="stat-top">
           <div class="stat-icon icon-batch">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
@@ -1315,8 +1358,35 @@ onUnmounted(() => {
       </div>
 
       <!-- 筛选栏 -->
-      <div class="filter-bar">
-        <div class="filter-toolbar" :class="{ 'filter-toolbar--sup': activeModule === 'supplements' }">
+      <div class="filter-bar" :class="{ 'filter-bar--user': isRegularUserOrderView }">
+        <div v-if="isRegularUserOrderView && activeModule === 'orders'" class="user-order-filter">
+          <div class="user-order-filter-head">
+            <span class="user-order-filter-title">订单列表</span>
+            <span class="user-order-filter-count">共 <strong>{{ total }}</strong> 条</span>
+          </div>
+          <div class="user-order-filter-bar">
+            <label class="user-search-field">
+              <svg class="user-search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input
+                v-model="searchOrderNo"
+                class="user-search-input"
+                type="search"
+                placeholder="输入订单号搜索"
+                enterkeyhint="search"
+                @keyup.enter="doSearch"
+              />
+              <button
+                v-if="searchOrderNo"
+                type="button"
+                class="user-search-clear"
+                aria-label="清除"
+                @click="resetSearch"
+              >×</button>
+            </label>
+            <button type="button" class="user-search-btn" @click="doSearch">搜索</button>
+          </div>
+        </div>
+        <div v-else class="filter-toolbar" :class="{ 'filter-toolbar--sup': activeModule === 'supplements' }">
           
           <!-- 模块下拉选择 -->
           <div class="module-select" v-click-outside="closeModuleDropdown">
@@ -1398,10 +1468,7 @@ onUnmounted(() => {
       <template v-if="activeModule === 'orders'">
         <!-- 普通用户：订单列表（卡片摘要 + 点击展开详情） -->
         <div v-if="isRegularUserOrderView" class="user-order-list">
-          <div v-if="loading" class="empty-state">
-            <div class="empty-spinner"></div>
-            <span>加载中...</span>
-          </div>
+          <EmptyState v-if="loading" loading class="empty-state" />
           <template v-else-if="orders.length">
             <div
               v-for="order in orders"
@@ -1463,25 +1530,6 @@ onUnmounted(() => {
                   </div>
                 </div>
 
-                <div class="uor-metrics">
-                  <div class="uor-metric">
-                    <span class="uor-metric-label">类型</span>
-                    <span class="uor-metric-type">{{ pn(order) }}</span>
-                  </div>
-                  <div class="uor-metric">
-                    <span class="uor-metric-label">下单数</span>
-                    <strong>{{ order.ordered_quantity || 0 }}</strong>
-                  </div>
-                  <div class="uor-metric">
-                    <span class="uor-metric-label">完成数</span>
-                    <strong class="is-ok">{{ order.completed_quantity || 0 }}</strong>
-                  </div>
-                  <div class="uor-metric">
-                    <span class="uor-metric-label">付款</span>
-                    <strong class="is-pay">¥{{ fmtMoney(order.actual_paid_amount || 0) }}</strong>
-                  </div>
-                </div>
-
                 <div class="uor-progress">
                   <div class="uor-progress-track">
                     <div
@@ -1508,6 +1556,31 @@ onUnmounted(() => {
                 <div v-if="userOrderDetailLoading === order.id" class="uor-detail-loading">加载中...</div>
                 <template v-else>
                   <p class="uor-detail-no mono">{{ detailOrder(order).order_no }}</p>
+                  <div class="uor-metrics uor-metrics--detail">
+                    <div class="uor-metric">
+                      <span class="uor-metric-label">类型</span>
+                      <span class="uor-metric-type">{{ pn(detailOrder(order)) }}</span>
+                    </div>
+                    <div class="uor-metric">
+                      <span class="uor-metric-label">下单数</span>
+                      <strong>{{ detailOrder(order).ordered_quantity || 0 }}</strong>
+                    </div>
+                    <div class="uor-metric">
+                      <span class="uor-metric-label">完成数</span>
+                      <strong class="is-ok">{{ detailOrder(order).completed_quantity || 0 }}</strong>
+                    </div>
+                    <div class="uor-metric">
+                      <span class="uor-metric-label">付款</span>
+                      <strong class="is-pay">¥{{ fmtMoney(orderPaidAmount(detailOrder(order))) }}</strong>
+                    </div>
+                  </div>
+                  <div v-if="detailOrder(order).product_description" class="order-pdesc-card">
+                    <div class="order-pdesc-head">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                      <span class="order-pdesc-label">商品描述</span>
+                    </div>
+                    <p class="order-pdesc-text">{{ detailOrder(order).product_description }}</p>
+                  </div>
                   <div v-if="detailOrder(order).note_url" class="oc-url-row">
                     <a class="oc-url" :href="detailOrder(order).note_url" target="_blank" rel="noopener">
                       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
@@ -1553,15 +1626,12 @@ onUnmounted(() => {
               </Transition>
             </div>
           </template>
-          <div v-else class="empty-state">暂无订单记录</div>
+          <EmptyState v-else class="empty-state" text="暂无订单记录" />
         </div>
 
         <!-- 代理 / 管理员：批次列表 -->
         <div v-else class="batch-list">
-          <div v-if="loading" class="empty-state">
-            <div class="empty-spinner"></div>
-            <span>加载中...</span>
-          </div>
+          <EmptyState v-if="loading" loading class="empty-state" />
           <template v-else-if="batches.length">
             <div
               class="batch-list-head"
@@ -1664,7 +1734,7 @@ onUnmounted(() => {
               </div>
             </div>
           </template>
-          <div v-else class="empty-state">暂无批次记录</div>
+          <EmptyState v-else class="empty-state" text="暂无批次记录" />
         </div>
 
         <div class="pagination-wrap">
@@ -1683,7 +1753,7 @@ onUnmounted(() => {
       <!-- ===== 补单记录模块（按批次分组） ===== -->
       <template v-else-if="activeModule === 'supplements'">
         <div class="batch-list">
-          <div v-if="supLoading" class="empty-state">加载中...</div>
+          <EmptyState v-if="supLoading" loading class="empty-state" />
           <template v-else-if="supBatches.length">
             <div
               class="batch-list-head sup-batch-list-head"
@@ -1766,7 +1836,7 @@ onUnmounted(() => {
               </div>
             </div>
           </template>
-          <div v-else class="empty-state">暂无补单记录</div>
+          <EmptyState v-else class="empty-state" text="暂无补单记录" />
         </div>
 
         <div class="pagination-wrap">
@@ -1890,15 +1960,17 @@ onUnmounted(() => {
                 <div v-for="(order, idx) in drawerOrders" :key="order.id" class="order-card" :data-order-no="order.order_no">
                   <div class="oc-card-top">
                     <span class="oc-idx">#{{ idx + 1 }}</span>
-                    <span v-if="isOwnBatch && pendingOrderIds.includes(order.id)" class="oc-refund-pending">退款申请中</span>
-                    <button
-                      v-else-if="isOwnBatch && !['completed','refunded','cancelled'].includes(order.order_status)"
-                      type="button"
-                      class="oc-refund-btn"
-                      :disabled="refundingOrderId === order.id"
-                      @click.stop="requestOrderRefund(order)"
-                    >{{ refundingOrderId === order.id ? '提交中...' : '申请退款' }}</button>
-                    <span class="oc-status-pill" :style="{ color: orderStatusView(order).color, background: orderStatusView(order).color + '14', borderColor: orderStatusView(order).color + '40' }">{{ orderStatusView(order).label }}</span>
+                    <div class="oc-card-top-end">
+                      <span v-if="isOwnBatch && pendingOrderIds.includes(order.id)" class="oc-refund-pending">退款申请中</span>
+                      <button
+                        v-else-if="isOwnBatch && !['completed','refunded','cancelled'].includes(order.order_status)"
+                        type="button"
+                        class="oc-refund-btn"
+                        :disabled="refundingOrderId === order.id"
+                        @click.stop="requestOrderRefund(order)"
+                      >{{ refundingOrderId === order.id ? '提交中...' : '申请退款' }}</button>
+                      <span class="oc-status-pill" :style="{ color: orderStatusView(order).color, background: orderStatusView(order).color + '14', borderColor: orderStatusView(order).color + '40' }">{{ orderStatusView(order).label }}</span>
+                    </div>
                   </div>
 
                   <div class="oc-card-main">
@@ -1955,8 +2027,15 @@ onUnmounted(() => {
                     </div>
                     <div class="oc-detail">
                       <span class="oc-dl">付款</span>
-                      <strong>¥{{ fmtMoney(order.actual_paid_amount || 0) }}</strong>
+                      <strong>¥{{ fmtMoney(orderPaidAmount(order)) }}</strong>
                     </div>
+                  </div>
+                  <div v-if="order.product_description" class="order-pdesc-card">
+                    <div class="order-pdesc-head">
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                      <span class="order-pdesc-label">商品描述</span>
+                    </div>
+                    <p class="order-pdesc-text">{{ order.product_description }}</p>
                   </div>
                   <!-- 订单进度条 -->
                   <div class="oc-progress-wrap">
@@ -2044,7 +2123,7 @@ onUnmounted(() => {
                   </template>
                 </div>
               </template>
-              <div v-else class="drawer-empty">暂无订单数据</div>
+              <EmptyState v-else compact text="暂无订单数据" class="drawer-empty" />
             </div>
           </div>
         </div>
@@ -2191,7 +2270,7 @@ onUnmounted(() => {
                   </div>
                 </div>
               </template>
-              <div v-else class="drawer-empty">暂无补单数据</div>
+              <EmptyState v-else compact text="暂无补单数据" class="drawer-empty" />
             </div>
           </div>
         </Transition>
@@ -2236,6 +2315,10 @@ onUnmounted(() => {
   padding: 20px 20px 72px;
 }
 
+.records-page--user-orders .page-hero--user {
+  margin-bottom: 14px;
+}
+
 /* ========== 页面头部 ========== */
 .page-hero {
   position: relative;
@@ -2249,12 +2332,107 @@ onUnmounted(() => {
 .hero-bg {
   position: absolute;
   inset: 0;
-  background: #fff;
+  background:
+    radial-gradient(ellipse 80% 60% at 0% 0%, rgba(47, 109, 246, 0.12), transparent 55%),
+    radial-gradient(ellipse 50% 40% at 100% 100%, rgba(47, 109, 246, 0.06), transparent 50%),
+    linear-gradient(180deg, #fff 0%, #fafbff 100%);
+}
+
+.hero-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 22px 26px;
 }
 
 .hero-content {
   position: relative;
+  z-index: 1;
   padding: 22px 26px;
+}
+
+.hero-inner .hero-content {
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+}
+
+.page-hero--user {
+  margin-bottom: 12px;
+  border-color: rgba(47, 109, 246, 0.12);
+  box-shadow: var(--rp-shadow);
+}
+
+.user-hero-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.user-hero-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.user-hero-cards {
+  display: flex;
+  align-items: stretch;
+  flex-shrink: 0;
+  gap: 10px;
+}
+
+.user-stat-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 132px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(47, 109, 246, 0.1);
+  box-shadow: 0 4px 14px rgba(47, 109, 246, 0.06);
+}
+
+.user-stat-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+.user-stat-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.user-stat-val {
+  font-size: 18px;
+  font-weight: 900;
+  color: var(--rp-text);
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+
+.user-stat-val--money {
+  font-size: 15px;
+  color: var(--rp-primary);
+}
+
+.user-stat-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--rp-text-3);
+  white-space: nowrap;
 }
 
 .hero-badge {
@@ -2498,6 +2676,158 @@ onUnmounted(() => {
   border: 1px solid var(--rp-border);
   box-shadow: var(--rp-shadow);
   overflow: visible;
+}
+
+.records-page--user-orders .records-body {
+  background: #fff;
+  border: 1px solid var(--rp-border);
+  box-shadow: var(--rp-shadow);
+  border-radius: var(--rp-radius);
+  overflow: hidden;
+}
+
+.records-page--user-orders .pagination-wrap {
+  border-top: 1px solid #f0f2f7;
+  padding: 12px 18px 16px;
+  background: #fff;
+}
+
+/* ========== 用户端订单筛选 ========== */
+
+.user-order-filter {
+  width: 100%;
+  padding: 16px 18px 14px;
+  border-radius: 0;
+  background: #fff;
+  border: none;
+  border-bottom: 1px solid #f0f2f7;
+  box-shadow: none;
+}
+
+.user-order-filter-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.user-order-filter-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--rp-text);
+}
+
+.user-order-filter-count {
+  font-size: 12px;
+  color: var(--rp-text-3);
+}
+
+.user-order-filter-count strong {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--rp-primary);
+}
+
+.user-order-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-search-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  height: 40px;
+  padding: 0 10px 0 12px;
+  border-radius: 10px;
+  border: 1.5px solid #e4ebf5;
+  background: #f8faff;
+  box-sizing: border-box;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.user-search-field:focus-within {
+  border-color: var(--rp-primary);
+  background: #fff;
+  box-shadow: 0 0 0 3px rgba(47, 109, 246, 0.1);
+}
+
+.user-search-icon {
+  flex-shrink: 0;
+  color: #9aa5b5;
+}
+
+.user-search-input {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 36px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--rp-text);
+  box-sizing: border-box;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.user-search-input::placeholder {
+  color: #b0b8c6;
+  font-size: 14px;
+}
+
+.user-search-input::-webkit-search-decoration,
+.user-search-input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.user-search-clear {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: #e8edf4;
+  color: #64748b;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.user-search-btn {
+  flex-shrink: 0;
+  height: 40px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--goosd-primary);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(47, 109, 246, 0.22);
+  transition: background 0.2s ease, transform 0.15s ease;
+}
+
+.user-search-btn:active {
+  transform: scale(0.98);
+}
+
+.filter-bar--user {
+  padding: 0;
+  border-bottom: none;
+  background: transparent;
 }
 
 /* ========== 筛选栏 ========== */
@@ -3482,8 +3812,15 @@ onUnmounted(() => {
 .user-order-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 4px 2px 12px;
+  gap: 10px;
+  padding: 12px 14px 14px;
+  background: linear-gradient(180deg, #f8faff 0%, #f4f7fb 100%);
+}
+
+.user-order-list .empty-state {
+  background: #fff;
+  border: 1px dashed #dce4f0;
+  border-radius: 14px;
 }
 
 .user-order-row {
@@ -3492,11 +3829,11 @@ onUnmounted(() => {
   align-items: stretch;
   gap: 0;
   width: 100%;
-  border: 1px solid #e8eef6;
-  border-radius: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
   background: #fff;
   text-align: left;
-  box-shadow: 0 1px 3px rgba(21, 32, 51, 0.04);
+  box-shadow: 0 2px 10px rgba(21, 32, 51, 0.05);
   transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
   overflow: hidden;
 }
@@ -3523,9 +3860,9 @@ onUnmounted(() => {
 .uor-clickable {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   width: 100%;
-  padding: 16px;
+  padding: 12px 10px;
   cursor: pointer;
   font-family: inherit;
   background: transparent;
@@ -3545,7 +3882,7 @@ onUnmounted(() => {
 .uor-head {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -3638,8 +3975,14 @@ onUnmounted(() => {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0;
-  padding: 12px 0 2px;
-  border-top: 1px solid #f0f3f8;
+}
+
+.uor-metrics--detail {
+  margin: 10px 0 12px;
+  padding: 12px 8px;
+  border-radius: 12px;
+  background: #f8faff;
+  border: 1px solid #eef2f7;
 }
 
 .uor-metric {
@@ -3690,6 +4033,42 @@ onUnmounted(() => {
   color: #22a858;
 }
 
+/* 商品描述（订单详情 / 抽屉通用） */
+.order-pdesc-card {
+  margin: 12px 0 14px;
+  padding: 10px 12px 11px;
+  border-radius: 10px;
+  background: #f5f8ff;
+  border: 1px solid #e4ecff;
+}
+
+.order-pdesc-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 7px;
+}
+
+.order-pdesc-head svg {
+  flex-shrink: 0;
+  color: #2f6df6;
+}
+
+.order-pdesc-label {
+  font-size: 11px;
+  font-weight: 800;
+  color: #2f6df6;
+  letter-spacing: 0.03em;
+}
+
+.order-pdesc-text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #425066;
+  word-break: break-word;
+}
+
 .uor-metric .is-pay {
   color: var(--rp-text);
   font-size: 14px;
@@ -3712,6 +4091,7 @@ onUnmounted(() => {
 .uor-progress-fill {
   height: 100%;
   border-radius: inherit;
+  background: var(--rp-primary);
   transition: width 400ms ease;
 }
 
@@ -3729,7 +4109,7 @@ onUnmounted(() => {
 }
 
 .uor-detail {
-  padding: 14px 16px 16px;
+  padding: 10px 10px 14px;
   border-top: 1px solid #eef2f7;
   background: linear-gradient(180deg, #f8faff 0%, #fff 100%);
 }
@@ -3742,10 +4122,14 @@ onUnmounted(() => {
 }
 
 .uor-detail-no {
-  margin: 14px 0 10px;
+  margin: 0 0 8px;
   font-size: 12px;
   color: var(--rp-text-3);
   word-break: break-all;
+}
+
+.uor-detail .order-pdesc-card + .oc-url-row {
+  margin-top: 2px;
 }
 
 .uor-detail .oc-url-row {
@@ -3978,6 +4362,7 @@ onUnmounted(() => {
 .dbi-progress-fill {
   height: 100%;
   border-radius: 999px;
+  background: var(--rp-primary);
   transition: width 600ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -4072,7 +4457,16 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.oc-card-top-end {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
   flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+  margin-left: auto;
 }
 
 .oc-card-main {
@@ -4161,7 +4555,6 @@ onUnmounted(() => {
 }
 
 .oc-refund-btn {
-  margin-left: 0;
   padding: 3px 10px;
   font-size: 11px;
   font-weight: 600;
@@ -4177,7 +4570,6 @@ onUnmounted(() => {
 .oc-refund-btn:disabled { opacity: .5; cursor: not-allowed; }
 
 .oc-refund-pending {
-  margin-left: 0;
   font-size: 11px;
   font-weight: 600;
   color: #f59e0b;
@@ -4335,6 +4727,7 @@ onUnmounted(() => {
 .oc-progress-fill {
   height: 100%;
   border-radius: 999px;
+  background: var(--rp-primary);
   transition: width 600ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -4730,7 +5123,23 @@ onUnmounted(() => {
   }
 
   .page-hero { margin-bottom: 10px; }
-  .hero-content { padding: 14px 14px; }
+  .hero-inner { padding: 14px 12px; gap: 12px; }
+  .hero-content { padding: 14px 14px 12px; }
+  .user-hero-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 14px;
+  }
+  .user-hero-cards {
+    width: 100%;
+  }
+  .user-stat-card {
+    flex: 1;
+    min-width: 0;
+    padding: 10px 12px;
+  }
+  .user-stat-val { font-size: 16px; }
+  .user-stat-val--money { font-size: 14px; }
   .hero-badge {
     font-size: 10px;
     padding: 3px 10px;
@@ -5228,9 +5637,60 @@ onUnmounted(() => {
     box-shadow: 0 6px 18px rgba(47, 109, 246, 0.07);
   }
 
-  .uor-clickable {
-    padding: 14px;
+  .filter-bar--user {
+    padding: 0;
+  }
+
+  .user-order-filter {
+    padding: 14px 12px 16px;
+  }
+
+  .user-order-filter-head {
+    margin-bottom: 16px;
+  }
+
+  .user-order-filter-bar {
+    flex-direction: column;
+    align-items: stretch;
     gap: 12px;
+  }
+
+  .user-search-field {
+    flex: none;
+    width: 100%;
+    min-height: 40px;
+    height: 40px;
+    padding: 0 10px 0 12px;
+  }
+
+  .user-search-input {
+    min-height: 38px;
+    height: 38px;
+    line-height: 38px;
+    font-size: 13px;
+  }
+
+  .user-search-input::placeholder {
+    font-size: 13px;
+  }
+
+  .user-search-btn {
+    width: 100%;
+    height: 38px;
+    font-size: 13px;
+  }
+
+  .user-order-list {
+    padding: 10px 10px 12px;
+  }
+
+  .records-page--user-orders .pagination-wrap {
+    padding: 10px 12px 14px;
+  }
+
+  .uor-clickable {
+    padding: 10px 8px;
+    gap: 10px;
   }
 
   .uor-avatar-wrap {
@@ -5257,10 +5717,10 @@ onUnmounted(() => {
     padding: 2px 8px;
   }
 
-  .uor-metrics {
+  .uor-metrics--detail {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     row-gap: 12px;
-    padding-top: 10px;
+    padding: 10px 8px;
   }
 
   .uor-metric:nth-child(3)::before,
@@ -5285,7 +5745,7 @@ onUnmounted(() => {
   }
 
   .uor-detail {
-    padding: 12px 14px 14px;
+    padding: 8px 8px 12px;
   }
 
   .drawer-slide-enter-from {

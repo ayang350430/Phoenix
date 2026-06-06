@@ -4,6 +4,7 @@ import config from '../config/index.js'
 import { authRequired } from '../middleware/auth.js'
 import { createPayment, queryPayment, verifySign } from '../utils/tinydatapay.js'
 import User from '../models/User.js'
+import { uniqueCode } from '../utils/idGen.js'
 
 const router = Router()
 
@@ -152,7 +153,7 @@ router.get('/callback', async (req, res) => {
       }
 
       await trx('account_records').insert({
-        record_no: `RECHARGE_${Date.now()}_${order.id}`,
+        record_no: await uniqueCode(trx, 'account_records', 'record_no'),
         user_id: order.user_id,
         record_type: 'recharge',
         direction: 'in',
@@ -227,7 +228,7 @@ router.get('/status', authRequired, async (req, res) => {
           }
 
           await trx('account_records').insert({
-            record_no: `RECHARGE_${Date.now()}_${order.id}`,
+            record_no: await uniqueCode(trx, 'account_records', 'record_no'),
             user_id: order.user_id, record_type: 'recharge', direction: 'in',
             actual_paid_amount: creditAmount,
             before_available_amount: oldAmount,

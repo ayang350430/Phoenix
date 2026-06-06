@@ -6,8 +6,12 @@ import { generateToken } from '../middleware/auth.js'
 import { validate } from '../middleware/validate.js'
 import { sendVerificationCodeEmail } from '../utils/mailer.js'
 import { generateCode, saveCode, verifyCode } from '../utils/resetCodes.js'
+import { uniqueCode } from '../utils/idGen.js'
 
 const router = Router()
+
+// 用户名规则：仅允许英文字母与数字（禁止中文/空格/符号），长度 3-20
+const USERNAME_RE = /^[A-Za-z0-9]{3,20}$/
 
 // ========== 简易速率限制（内存，按 IP） ==========
 const loginAttempts = new Map()  // ip -> { count, resetAt }
@@ -81,6 +85,10 @@ router.post('/login', validate({ body: ['username', 'password'] }), async (req, 
 router.post('/register', validate({ body: ['username', 'password'] }), async (req, res) => {
   try {
     const { username, password, real_name, nickname, ref: refCode } = req.body
+    // 用户名只允许英文字母+数字（禁止中文等），长度 3-20
+    if (!USERNAME_RE.test(username || '')) {
+      return res.status(400).json({ code: 400, message: '用户名只能包含英文字母和数字，长度 3-20 位' })
+    }
     if (!password || password.length < 6) {
       return res.status(400).json({ code: 400, message: '密码至少需要 6 位' })
     }
@@ -116,9 +124,8 @@ router.post('/register', validate({ body: ['username', 'password'] }), async (re
             } else {
               await db('balance_accounts').insert({ user_id: user.id, available_amount: newBal, created_at: now, updated_at: now })
             }
-            const { randomUUID } = await import('crypto')
             await db('account_records').insert({
-              record_no: `BONUS_${randomUUID().replace(/-/g, '').slice(0, 16)}`,
+              record_no: await uniqueCode(db, 'account_records', 'record_no'),
               user_id: user.id,
               record_type: 'register_bonus',
               direction: 'in',

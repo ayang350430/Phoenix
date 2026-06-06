@@ -8,6 +8,8 @@ import { House, Search, ShoppingCart, Tickets, UserFilled, Wallet } from '@eleme
 import logoSvg from '../assets/logo.svg'
 
 const ChatWidget = defineAsyncComponent(() => import('./ChatWidget.vue'))
+import EmptyState from './EmptyState.vue'
+import UserAvatar from './UserAvatar.vue'
 import { getMobileUserTabAction, isMobileUserTabSelected } from '../utils/mobileUserTabs.js'
 import { canShowReferralLink } from '../utils/referralVisibility.js'
 
@@ -97,7 +99,7 @@ function fallbackCopy(text) {
 // ========== 导航 ==========
 const baseNavs = ['首页', '批量下单', '查询订单']
 const navs = computed(() => {
-  if (isAdmin.value) return ['首页', '批量下单', '记录中心', '消费记录', '查询订单', '退款申请', '在线客服', '聊天记录', '客服配置', '嵌入指南', '权限管理']
+  if (isAdmin.value) return ['首页', '批量下单', '记录中心', '消费记录', '查询订单', '退款申请', '在线客服', '聊天记录', '客服配置', '权限管理']
   if (isAgent.value) {
     const items = [...baseNavs, '下单记录', '消费记录', '商品管理']
     if (isSupport.value) items.push('在线客服')
@@ -366,6 +368,25 @@ const pollingOrderNo = ref('')
 const pollingTimer = ref(null)
 
 const presetAmounts = [10, 50, 100, 200, 500, 1000]
+
+const rechargeAmountNum = computed(() => {
+  const n = parseFloat(rechargeAmount.value)
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : 0
+})
+
+const rechargeCanSubmit = computed(() => rechargeAmountNum.value >= 1 && !rechargeLoading.value)
+
+const rechargeSubmitText = computed(() => {
+  if (rechargeLoading.value) return '创建订单中...'
+  if (rechargeAmountNum.value >= 1) {
+    return `确认充值 ¥${rechargeAmountNum.value.toFixed(2)}`
+  }
+  return '确认充值'
+})
+
+function isPresetActive(val) {
+  return rechargeAmountNum.value === val
+}
 
 async function fetchBalance() {
   try {
@@ -655,9 +676,8 @@ provide('workspace', {
             <strong class="balance-value">¥{{ balance.toFixed(2) }}</strong>
             <span class="recharge-btn">充值</span>
           </div>
-          <button type="button" class="avatar avatar-button ws-client-avatar" @click="showUserDrawer = true" title="用户中心">
-            <img v-if="userAvatar" :src="userAvatar" :alt="userName" class="avatar-img" />
-            <span v-else class="avatar-initial">{{ userInitial }}</span>
+          <button type="button" class="topbar-avatar-btn ws-client-avatar" @click="showUserDrawer = true" title="用户中心">
+            <UserAvatar :name="userName" :src="userAvatar" :size="34" bordered />
           </button>
         </template>
         <template v-else>
@@ -692,9 +712,8 @@ provide('workspace', {
             <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
           </svg>
         </button>
-        <button type="button" class="avatar avatar-button" @click="showUserDrawer = true" title="用户中心">
-          <img v-if="userAvatar" :src="userAvatar" :alt="userName" class="avatar-img" />
-          <span v-else class="avatar-initial">{{ userInitial }}</span>
+        <button type="button" class="topbar-avatar-btn" @click="showUserDrawer = true" title="用户中心">
+          <UserAvatar :name="userName" :src="userAvatar" :size="34" bordered />
         </button>
         </div>
         </template>
@@ -709,10 +728,7 @@ provide('workspace', {
           <aside class="mobile-nav-drawer" @touchmove.stop>
             <div class="mobile-nav-header">
               <div class="mobile-nav-user">
-                <span class="avatar" style="width:40px;height:40px;font-size:16px;">
-                  <img v-if="userAvatar" :src="userAvatar" class="avatar-img" />
-                  <span v-else class="avatar-initial">{{ userInitial }}</span>
-                </span>
+                <UserAvatar :name="userName" :src="userAvatar" :size="40" />
                 <div>
                   <strong>{{ userName }}</strong>
                   <small>{{ roleLabel }}</small>
@@ -738,6 +754,11 @@ provide('workspace', {
                   stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <circle cx="12" cy="12" r="10" />
                   <polyline points="12 6 12 12 16 14" />
+                </svg>
+                <svg v-else-if="nav === '消费记录'" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="2" y="5" width="20" height="14" rx="2" />
+                  <line x1="2" y1="10" x2="22" y2="10" />
                 </svg>
                 <svg v-else-if="nav === '下单记录'" width="18" height="18" viewBox="0 0 24 24" fill="none"
                   stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -876,10 +897,7 @@ provide('workspace', {
           </header>
 
           <div class="ud-profile">
-            <div class="avatar large ud-avatar">
-              <img v-if="userAvatar" :src="userAvatar" :alt="userName" class="avatar-img" />
-              <span v-else class="avatar-initial">{{ userInitial }}</span>
-            </div>
+            <UserAvatar class="ud-avatar" :name="userName" :src="userAvatar" :size="58" />
             <div class="ud-profile-text">
               <strong class="ud-name">{{ userName }}</strong>
               <span class="ud-username">@{{ currentUser?.username }}</span>
@@ -988,9 +1006,13 @@ provide('workspace', {
           <h2 class="recharge-title">账户充值</h2>
           <p class="recharge-balance">当前余额：<strong>¥{{ balance.toFixed(2) }}</strong></p>
           <div class="preset-grid">
-            <button v-for="val in presetAmounts" :key="val" type="button"
-              :class="['preset-item', { active: rechargeAmount === String(val) }]" @click="selectAmount(val)">¥{{ val
-              }}</button>
+            <button
+              v-for="val in presetAmounts"
+              :key="val"
+              type="button"
+              :class="['preset-item', { active: isPresetActive(val) }]"
+              @click="selectAmount(val)"
+            >¥{{ val }}</button>
           </div>
           <div class="custom-amount">
             <label>自定义金额</label>
@@ -1001,9 +1023,13 @@ provide('workspace', {
             </div>
           </div>
           <p v-if="rechargeError" class="recharge-error">{{ rechargeError }}</p>
-          <button type="button" class="drawer-action recharge-submit" :class="{ loading: rechargeLoading }"
-            :disabled="rechargeLoading" @click="submitRecharge">{{ rechargeLoading ? '创建订单中...' : `确认充值
-            ¥${rechargeAmount || '0'}` }}</button>
+          <button
+            type="button"
+            class="recharge-submit"
+            :class="{ loading: rechargeLoading, 'is-ready': rechargeCanSubmit }"
+            :disabled="!rechargeCanSubmit"
+            @click="submitRecharge"
+          >{{ rechargeSubmitText }}</button>
           <p class="recharge-hint">支持支付宝、微信、TRX、USDT 多种支付方式</p>
         </div>
       </div>
@@ -1043,22 +1069,19 @@ provide('workspace', {
               <div class="team-spinner"></div>
               <span>加载中...</span>
             </div>
-            <div v-else-if="teamList.length === 0" class="team-empty">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#d0d7e2" stroke-width="1.5"
-                stroke-linecap="round" stroke-linejoin="round">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                <circle cx="9" cy="7" r="4" />
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-              </svg>
-              <p>暂无下级用户</p>
-              <small>分享您的推荐链接邀请用户注册</small>
-            </div>
+            <EmptyState
+              v-else-if="teamList.length === 0"
+              class="team-empty"
+              text="暂无下级用户"
+              description="分享您的推荐链接邀请用户注册"
+            />
             <template v-else>
               <div v-for="u in teamList" :key="u.id" class="team-member">
-                <div class="member-avatar">
-                  <span>{{ (u.username || '?')[0].toUpperCase() }}</span>
-                </div>
+                <UserAvatar
+                  :name="u.nickname || u.real_name || u.username"
+                  :size="42"
+                  shape="rounded"
+                />
                 <div class="member-info">
                   <div class="member-name">{{ u.username }}<span v-if="u.nickname || u.real_name" class="member-nick">{{
                     u.nickname || u.real_name }}</span></div>
@@ -1332,61 +1355,28 @@ provide('workspace', {
 
 /* ========== 头像 ========== */
 
-.avatar {
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  border-radius: 50%;
-  background: #fff;
-  color: #fff;
-  font-weight: 900;
-  overflow: hidden;
-  transition: transform var(--motion-base) var(--motion-soft), box-shadow var(--motion-base) ease, background var(--motion-base) ease;
-}
-
-.avatar-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  border-radius: 50%;
-}
-
-.avatar-initial {
-  font-size: 14px;
-  line-height: 1;
-  text-transform: uppercase;
-  user-select: none;
-  color: #111827;
-}
-
-.avatar-button {
-  cursor: pointer;
-  border: 2px solid var(--ws-border);
-  box-shadow: 0 2px 8px rgba(21, 32, 51, 0.06);
-}
-
-.avatar-button:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(47, 109, 246, 0.15);
-  border-color: #c4d4ff;
-}
-
-.avatar-button:active {
-  transform: scale(0.96);
-}
-
-.drawer-head .avatar {
+.topbar-avatar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0;
   border: none;
+  background: transparent;
+  border-radius: 50%;
+  cursor: pointer;
+  line-height: 0;
+  flex-shrink: 0;
+  transition: transform var(--motion-base) var(--motion-soft), filter var(--motion-base) ease;
 }
 
-.avatar.large {
-  width: 58px;
-  height: 58px;
+.topbar-avatar-btn:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.05);
 }
 
-.avatar.large .avatar-initial {
-  font-size: 24px;
+.topbar-avatar-btn:active {
+  transform: scale(0.96);
 }
 
 /* ========== 余额 & 充值 ========== */
@@ -2095,20 +2085,6 @@ provide('workspace', {
   box-shadow: 0 8px 24px rgba(21, 32, 51, 0.06);
 }
 
-.member-avatar {
-  width: 42px;
-  height: 42px;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #8b7bf7, #5b8def);
-  color: #fff;
-  display: grid;
-  place-items: center;
-  font-size: 16px;
-  font-weight: 800;
-  flex-shrink: 0;
-  box-shadow: 0 4px 12px rgba(139, 123, 247, 0.2);
-}
-
 .member-info {
   flex: 1;
   min-width: 0;
@@ -2279,18 +2255,18 @@ provide('workspace', {
 }
 
 .preset-item:hover {
-  border-color: #c4b8fd;
-  background: #f3f0ff;
-  color: #8b7bf7;
+  border-color: rgba(47, 109, 246, 0.45);
+  background: rgba(47, 109, 246, 0.06);
+  color: var(--goosd-primary);
   transform: translateY(-2px);
-  box-shadow: 0 8px 18px rgba(139, 123, 247, 0.12);
+  box-shadow: 0 8px 18px rgba(47, 109, 246, 0.1);
 }
 
 .preset-item.active {
-  border-color: #8b7bf7;
-  background: linear-gradient(135deg, #f3f0ff, #ece8ff);
-  color: #8b7bf7;
-  box-shadow: 0 8px 20px rgba(139, 123, 247, 0.18);
+  border-color: var(--goosd-primary);
+  background: rgba(47, 109, 246, 0.1);
+  color: var(--goosd-primary);
+  box-shadow: 0 8px 20px rgba(47, 109, 246, 0.14);
 }
 
 .custom-amount {
@@ -2315,15 +2291,15 @@ provide('workspace', {
 }
 
 .amount-input-wrap:focus-within {
-  border-color: #8b7bf7;
-  box-shadow: 0 0 0 4px rgba(139, 123, 247, 0.12);
+  border-color: var(--goosd-primary);
+  box-shadow: 0 0 0 4px rgba(47, 109, 246, 0.12);
 }
 
 .amount-prefix {
   padding: 0 12px;
   font-size: 18px;
   font-weight: 800;
-  color: #8b7bf7;
+  color: var(--goosd-primary);
   background: #f6f8fc;
   height: 44px;
   display: grid;
@@ -2360,11 +2336,39 @@ provide('workspace', {
 }
 
 .recharge-submit {
+  display: block;
+  width: 100%;
   margin-top: 4px;
+  height: 48px;
+  border: none;
+  border-radius: 10px;
+  font-size: 16px;
+  font-weight: 700;
+  color: #fff;
+  background: #c5d4f5;
+  cursor: not-allowed;
+  transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+.recharge-submit.is-ready {
+  background: var(--goosd-primary);
+  cursor: pointer;
+  box-shadow: 0 8px 20px rgba(47, 109, 246, 0.28);
+}
+
+.recharge-submit.is-ready:hover:not(:disabled) {
+  background: var(--goosd-primary-dark);
+  transform: translateY(-1px);
+}
+
+.recharge-submit.is-ready:active:not(:disabled) {
+  transform: translateY(0);
+  box-shadow: 0 4px 12px rgba(47, 109, 246, 0.22);
 }
 
 .recharge-submit.loading {
-  opacity: 0.7;
+  opacity: 0.85;
+  cursor: wait;
   pointer-events: none;
 }
 
@@ -2619,14 +2623,8 @@ provide('workspace', {
     border-radius: 8px;
   }
 
-  .ws-actions .avatar-button {
-    display: grid;
+  .ws-actions .topbar-avatar-btn {
     flex-shrink: 0;
-    width: 36px;
-    height: 36px;
-    font-size: 14px;
-    border: 1px solid var(--ws-border);
-    background: #fff;
   }
 
   .workspace-layout.has-mobile-user-tabbar {
@@ -2751,11 +2749,6 @@ provide('workspace', {
 
   .workspace-layout.has-mobile-user-tabbar .ws-client-avatar {
     flex-shrink: 0;
-    width: 34px;
-    height: 34px;
-    font-size: 14px;
-    border: 1px solid var(--ws-border);
-    background: #fff;
   }
 
   @media (max-width: 380px) {
@@ -3131,13 +3124,6 @@ provide('workspace', {
     border-radius: 12px;
     gap: 12px;
     margin-bottom: 8px;
-  }
-
-  .member-avatar {
-    width: 38px;
-    height: 38px;
-    border-radius: 10px;
-    font-size: 14px;
   }
 
   .member-name {

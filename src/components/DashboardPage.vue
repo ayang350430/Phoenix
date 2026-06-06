@@ -2,6 +2,7 @@
 import { computed, inject, onMounted, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import DashboardAppIcon from './DashboardAppIcon.vue'
+import EmptyState from './EmptyState.vue'
 
 const router = useRouter()
 
@@ -70,7 +71,31 @@ const recordTypeMap = {
 
 function formatType(t) { return typeMap[t] || t || '其他' }
 function formatStatus(s) { return statusMap[s] || s || '-' }
-function formatRecordType(r) { return r.remark || recordTypeMap[r.record_type] || r.record_type || '-' }
+
+function recordAgentName(r) {
+  return r.nickname || r.real_name || r.username || ''
+}
+
+function recordSubordinateName(r) {
+  return r.subordinate_nickname || r.subordinate_real_name || r.subordinate_username
+    || ((r.remark || '').match(/（([^）]+)）/) || [])[1] || ''
+}
+
+function formatRecordType(r) {
+  if (r.record_type === 'agent_commission' || r.record_type === 'agent_commission_refund') {
+    const sub = recordSubordinateName(r)
+    const agent = recordAgentName(r)
+    const isRefund = r.record_type === 'agent_commission_refund'
+    if (isAdmin.value && agent) {
+      const action = isRefund ? '分润扣回' : '分润'
+      return sub ? `代理 ${agent} · 下级 ${sub} ${action}` : `代理 ${agent} ${action}`
+    }
+    if (sub) {
+      return isRefund ? `下级 ${sub} 退款扣回分润` : `下级 ${sub} 下单分润`
+    }
+  }
+  return r.remark || recordTypeMap[r.record_type] || r.record_type || '-'
+}
 function isIncomeRecord(r) { return r.direction === 'in' || r.direction === 'credit' }
 
 function recordAmount(r) {
@@ -235,9 +260,41 @@ watch(activeBottomNav, val => {
 })
 
 // 按类型汇总
-const typeCards = computed(() => {
+const TYPE_META = {
+  read: { tone: 'blue', icon: 'read' },
+  like: { tone: 'purple', icon: 'like' },
+  impression: { tone: 'cyan', icon: 'impression' },
+  collect: { tone: 'orange', icon: 'records' },
+  comment: { tone: 'green', icon: 'validate' }
+}
+
+const typeSummary = computed(() => {
   const byType = stats.value.by_type || []
-  return byType.map(t => [t.product_name ? t.product_name.replace(/^小红书/, '') : formatType(t.target_type), `${t.count} 单`])
+  const items = byType.map(t => {
+    const typeKey = t.target_type || ''
+    const meta = TYPE_META[typeKey] || { tone: 'blue', icon: 'read' }
+    const label = t.product_name
+      ? t.product_name.replace(/^小红书/, '')
+      : (formatType(typeKey) || typeKey || '其他')
+    return {
+      key: typeKey || label,
+      label,
+      count: Number(t.count) || 0,
+      tone: meta.tone,
+      icon: meta.icon
+    }
+  }).sort((a, b) => b.count - a.count)
+
+  const total = items.reduce((sum, item) => sum + item.count, 0) || Number(stats.value.total_orders) || 0
+  return items.map(item => ({
+    ...item,
+    percent: total > 0 ? Math.round((item.count / total) * 1000) / 10 : 0
+  }))
+})
+
+const typeSummaryTotal = computed(() => {
+  const sum = typeSummary.value.reduce((s, item) => s + item.count, 0)
+  return sum || Number(stats.value.total_orders) || 0
 })
 
 async function fetchDashboard() {
@@ -358,7 +415,7 @@ onBeforeUnmount(() => {
           </div>
         </li>
       </ul>
-      <p v-else class="empty-hint">暂无通知</p>
+      <EmptyState v-else mini text="暂无通知" class="empty-hint" />
     </section>
 
     <aside v-if="showActivityAndFlow" class="side-column">
@@ -402,7 +459,7 @@ onBeforeUnmount(() => {
             </strong>
           </div>
         </div>
-        <p v-else class="empty-hint">暂无记录</p>
+        <EmptyState v-else mini text="暂无记录" class="empty-hint" />
       </section>
     </aside>
 
@@ -422,25 +479,55 @@ onBeforeUnmount(() => {
           >{{ nav }}</button>
         </div>
         <p class="bottom-toolbar-hint">
-          {{ activeBottomNav === '数据概览' ? '近 7 日订单趋势' : '按任务类型统计' }}
+          <template v-if="activeBottomNav === '数据概览'">近 7 日订单趋势</template>
+          <template v-else>共 {{ typeSummaryTotal }} 单 · {{ typeSummary.length }} 类任务</template>
         </p>
       </div>
 
       <!-- 数据概览 -->
       <div v-if="activeBottomNav === '数据概览'" class="bottom-content bottom-chart">
         <div v-if="dailyStats.some(d => d.count > 0)" ref="chartRef" class="echarts-container"></div>
-        <p v-else class="empty-hint">暂无趋势数据</p>
+        <EmptyState v-else mini text="暂无趋势数据" class="empty-hint" />
       </div>
 
       <!-- 类型汇总 -->
-      <div v-else-if="activeBottomNav === '类型汇总'" class="bottom-content">
-        <div v-if="typeCards.length" class="type-stat-grid">
-          <div v-for="item in typeCards" :key="item[0]" class="type-stat-card">
-            <span class="type-stat-label">{{ item[0] }}</span>
-            <strong class="type-stat-value">{{ item[1] }}</strong>
+      <div v-else-if="activeBottomNav === '类型汇总'" class="bottom-content type-summary-wrap">
+        <div v-if="typeSummary.length" class="type-summary">
+          <div class="type-distribution-bar" role="img" :aria-label="`订单类型分布，共 ${typeSummaryTotal} 单`">
+            <span
+              v-for="item in typeSummary"
+              :key="`seg-${item.key}`"
+              class="type-distribution-segment"
+              :class="`tone-${item.tone}`"
+              :style="{ flex: `${item.percent} 1 0` }"
+              :title="`${item.label} ${item.count} 单 · ${item.percent}%`"
+            />
+          </div>
+          <div class="type-stat-grid">
+            <article
+              v-for="item in typeSummary"
+              :key="item.key"
+              class="type-stat-card"
+              :class="`tone-${item.tone}`"
+            >
+              <div class="type-stat-top">
+                <DashboardAppIcon :type="item.icon" :tone="item.tone" />
+                <span class="type-stat-label">{{ item.label }}</span>
+              </div>
+              <div class="type-stat-metrics">
+                <div class="type-stat-count">
+                  <strong class="type-stat-value">{{ item.count }}</strong>
+                  <span class="type-stat-unit">单</span>
+                </div>
+                <span class="type-stat-pct">{{ item.percent }}%</span>
+              </div>
+              <div class="type-stat-bar" aria-hidden="true">
+                <span class="type-stat-bar-fill" :style="{ width: `${item.percent}%` }" />
+              </div>
+            </article>
           </div>
         </div>
-        <p v-else class="empty-hint">暂无类型数据</p>
+        <EmptyState v-else mini text="暂无类型数据" class="empty-hint" />
       </div>
     </section>
   </section>
@@ -830,13 +917,8 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
-.empty-hint::before {
-  content: '';
-  width: 34px;
-  height: 34px;
-  border: 1px dashed #d9e1ee;
-  border-radius: 10px;
-  background: linear-gradient(135deg, rgba(91, 141, 239, 0.08), rgba(238, 77, 122, 0.06));
+.empty-hint.goosd-empty {
+  min-height: 118px;
 }
 
 .order-status {
@@ -1162,42 +1244,169 @@ onBeforeUnmount(() => {
   border: 1px solid var(--dash-border);
 }
 
+.type-summary-wrap {
+  min-height: 280px;
+}
+
+.type-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.type-distribution-bar {
+  display: flex;
+  width: 100%;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: #eef2f7;
+  border: 1px solid var(--dash-border);
+}
+
+.type-distribution-segment {
+  min-width: 4px;
+  height: 100%;
+  transition: opacity 180ms ease;
+}
+
+.type-distribution-segment:first-child {
+  border-radius: 999px 0 0 999px;
+}
+
+.type-distribution-segment:last-child {
+  border-radius: 0 999px 999px 0;
+}
+
+.type-distribution-segment:only-child {
+  border-radius: 999px;
+}
+
+.type-distribution-segment.tone-blue { background: linear-gradient(90deg, #5b8def, #2f6df6); }
+.type-distribution-segment.tone-purple { background: linear-gradient(90deg, #a78bfa, #8b7bf7); }
+.type-distribution-segment.tone-cyan { background: linear-gradient(90deg, #22d3ee, #06b6d4); }
+.type-distribution-segment.tone-orange { background: linear-gradient(90deg, #fbbf24, #f59e0b); }
+.type-distribution-segment.tone-green { background: linear-gradient(90deg, #4ade80, #10b981); }
+.type-distribution-segment.tone-pink { background: linear-gradient(90deg, #ff6b93, #ee4d7a); }
+
 .type-stat-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 14px;
 }
 
 .type-stat-card {
-  padding: 16px 18px;
-  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 148px;
+  padding: 16px 18px 14px;
+  border-radius: 14px;
   border: 1px solid var(--dash-border);
-  background: #f8fafc;
-  text-align: left;
-  transition: border-color 180ms ease, box-shadow 180ms ease;
+  background: linear-gradient(180deg, #fbfcff 0%, #f8fafc 100%);
+  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
 }
 
 .type-stat-card:hover {
-  border-color: rgba(47, 109, 246, 0.22);
-  box-shadow: 0 4px 12px rgba(47, 109, 246, 0.08);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 22px rgba(21, 32, 51, 0.07);
+}
+
+.type-stat-card.tone-blue:hover { border-color: rgba(47, 109, 246, 0.28); }
+.type-stat-card.tone-purple:hover { border-color: rgba(139, 123, 247, 0.35); }
+.type-stat-card.tone-cyan:hover { border-color: rgba(6, 182, 212, 0.35); }
+.type-stat-card.tone-orange:hover { border-color: rgba(245, 158, 11, 0.35); }
+.type-stat-card.tone-green:hover { border-color: rgba(16, 185, 129, 0.35); }
+
+.type-stat-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.type-stat-top :deep(.dash-app-icon) {
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  flex-shrink: 0;
+  box-shadow: 0 6px 14px rgba(21, 32, 51, 0.1);
+}
+
+.type-stat-top :deep(.dash-app-icon svg) {
+  width: 20px;
+  height: 20px;
 }
 
 .type-stat-label {
-  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--dash-text);
+  line-height: 1.3;
+}
+
+.type-stat-metrics {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.type-stat-count {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.type-stat-value {
+  font-size: 28px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.type-stat-card.tone-blue .type-stat-value,
+.type-stat-card.tone-blue .type-stat-pct { color: #2f6df6; }
+.type-stat-card.tone-purple .type-stat-value,
+.type-stat-card.tone-purple .type-stat-pct { color: #7c3aed; }
+.type-stat-card.tone-cyan .type-stat-value,
+.type-stat-card.tone-cyan .type-stat-pct { color: #0891b2; }
+.type-stat-card.tone-orange .type-stat-value,
+.type-stat-card.tone-orange .type-stat-pct { color: #d97706; }
+.type-stat-card.tone-green .type-stat-value,
+.type-stat-card.tone-green .type-stat-pct { color: #059669; }
+
+.type-stat-unit {
   font-size: 13px;
   font-weight: 600;
   color: var(--dash-muted);
 }
 
-.type-stat-value {
-  display: block;
-  margin-top: 8px;
-  font-size: 22px;
+.type-stat-pct {
+  font-size: 15px;
   font-weight: 800;
-  color: var(--dash-primary);
   font-variant-numeric: tabular-nums;
-  line-height: 1.1;
 }
+
+.type-stat-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: #e8edf4;
+  overflow: hidden;
+}
+
+.type-stat-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.type-stat-card.tone-blue .type-stat-bar-fill { background: linear-gradient(90deg, #5b8def, #2f6df6); }
+.type-stat-card.tone-purple .type-stat-bar-fill { background: linear-gradient(90deg, #a78bfa, #8b7bf7); }
+.type-stat-card.tone-cyan .type-stat-bar-fill { background: linear-gradient(90deg, #22d3ee, #06b6d4); }
+.type-stat-card.tone-orange .type-stat-bar-fill { background: linear-gradient(90deg, #fbbf24, #f59e0b); }
+.type-stat-card.tone-green .type-stat-bar-fill { background: linear-gradient(90deg, #4ade80, #10b981); }
 
 .list-card ul {
   list-style: none;
@@ -1735,11 +1944,22 @@ onBeforeUnmount(() => {
   }
 
   .type-stat-grid {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .type-stat-card {
+    min-height: 132px;
+    padding: 14px;
   }
 
   .type-stat-value {
-    font-size: 18px;
+    font-size: 22px;
+  }
+
+  .type-stat-top :deep(.dash-app-icon) {
+    width: 34px;
+    height: 34px;
   }
 
   .feed-row {

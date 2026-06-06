@@ -196,6 +196,26 @@ describe('POST /api/auth/register', () => {
     expect(res.body.message).toContain('6')
   })
 
+  it('should reject Chinese username (only letters and digits allowed)', async () => {
+    const app = createApp()
+    const res = await request(app)
+      .post('/api/auth/register')
+      .send({ username: '啊扬', password: '123456', ref: 'ABCD1234' })
+
+    expect(res.status).toBe(400)
+    expect(res.body.message).toContain('英文')
+  })
+
+  it('should reject username with spaces or symbols', async () => {
+    const app = createApp()
+    for (const bad of ['ab', 'user name', 'user@1', 'a'.repeat(21)]) {
+      const res = await request(app)
+        .post('/api/auth/register')
+        .send({ username: bad, password: '123456', ref: 'ABCD1234' })
+      expect(res.status).toBe(400)
+    }
+  })
+
   it('should return 409 when username already exists', async () => {
     User.findByUsername.mockResolvedValue({ id: 1, username: 'taken' })
 

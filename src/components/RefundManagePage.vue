@@ -1,5 +1,7 @@
 <script setup>
 import { inject, onMounted, ref, computed } from 'vue'
+import EmptyState from './EmptyState.vue'
+import UserAvatar from './UserAvatar.vue'
 
 const ws = inject('workspace')
 const { getToken, isAdmin, fetchBalance } = ws
@@ -269,10 +271,9 @@ onMounted(fetchList)
 
     <section class="refund-panel">
       <div class="panel-toolbar">
-        <div class="toolbar-left">
-          <span class="total-badge">
-            共 <strong>{{ total }}</strong> 条
-          </span>
+        <div class="toolbar-head">
+          <span class="toolbar-title">申请列表</span>
+          <span class="total-badge">共 <strong>{{ total }}</strong> 条</span>
           <span v-if="pendingCount > 0" class="pending-badge">{{ pendingCount }} 待审批</span>
         </div>
         <div class="filter-tabs" role="tablist">
@@ -283,64 +284,73 @@ onMounted(fetchList)
         </div>
       </div>
 
-      <div class="table-wrap">
-        <table class="refund-table">
-          <colgroup>
-            <col class="col-user" />
-            <col class="col-batch" />
-            <col class="col-money" />
-            <col class="col-reason" />
-            <col class="col-status" />
-            <col class="col-time" />
-            <col class="col-reviewer" />
-            <col class="col-remark" />
-            <col class="col-action" />
-          </colgroup>
-          <thead>
-            <tr>
-              <th>申请人</th>
-              <th>批次号</th>
-              <th>预估退款</th>
-              <th>申请理由</th>
-              <th>状态</th>
-              <th>申请时间</th>
-              <th>审批人</th>
-              <th>备注</th>
-              <th class="th-action">操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="item in list" :key="item.id" class="data-row" @click="openDetail(item)">
-              <td class="user-cell">{{ displayName(item) }}</td>
-              <td class="mono batch-cell">{{ item.batch_no || '-' }}</td>
-              <td class="money-cell">¥{{ fmtMoney(item.refund_amount) }}</td>
-              <td class="reason-cell" :title="item.reason || ''">{{ item.reason || '-' }}</td>
-              <td>
-                <span class="status-pill" :style="{ color: sc(item.status).color, background: sc(item.status).bg, borderColor: sc(item.status).color + '33' }">
-                  {{ sc(item.status).label }}
-                </span>
-              </td>
-              <td class="time-cell">{{ fmtTime(item.created_at) }}</td>
-              <td class="reviewer-cell">{{ item.reviewer_name || '-' }}</td>
-              <td class="reason-cell" :title="item.review_remark || ''">{{ item.review_remark || '-' }}</td>
-              <td class="action-cell" @click.stop>
-                <div class="action-btns">
-                  <template v-if="item.status === 'pending'">
-                    <button type="button" class="tbl-act-btn approve" :disabled="processing === item.id" @click="handleApprove(item)">通过</button>
-                    <button type="button" class="tbl-act-btn reject" :disabled="processing === item.id" @click="handleReject(item)">驳回</button>
-                  </template>
-                  <button v-if="isAdmin" type="button" class="tbl-act-btn full-refund" :disabled="processing === item.id" @click="handleFullRefund(item)">全额退款</button>
-                  <span v-if="item.status !== 'pending' && !isAdmin" class="action-placeholder">—</span>
+      <div class="refund-list">
+        <template v-if="!loading && list.length">
+          <article
+            v-for="item in list"
+            :key="item.id"
+            class="refund-card"
+            :class="`is-${item.status}`"
+          >
+            <div
+              class="refund-row"
+              role="button"
+              tabindex="0"
+              @click="openDetail(item)"
+              @keyup.enter="openDetail(item)"
+            >
+              <UserAvatar :name="displayName(item)" :size="40" shape="rounded" />
+
+              <div class="refund-body">
+                <div class="refund-title-row">
+                  <strong class="refund-user">{{ displayName(item) }}</strong>
+                  <span class="refund-amount">¥{{ fmtMoney(item.refund_amount) }}</span>
                 </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-if="loading" class="empty-state">
-          <div class="empty-spinner"></div>
-          <span>加载中...</span>
-        </div>
-        <div v-if="!loading && list.length === 0" class="empty-state">暂无退款申请</div>
+                <p class="refund-batch mono">{{ item.batch_no || '-' }}</p>
+                <div class="refund-meta">
+                  <time class="refund-time">{{ fmtTime(item.created_at) }}</time>
+                  <span
+                    class="status-pill"
+                    :style="{ color: sc(item.status).color, background: sc(item.status).bg, borderColor: sc(item.status).color + '33' }"
+                  >{{ sc(item.status).label }}</span>
+                  <span v-if="item.reviewer_name" class="refund-tag">审批 {{ item.reviewer_name }}</span>
+                  <span v-if="item.reason" class="refund-tag refund-tag--reason" :title="item.reason">{{ item.reason }}</span>
+                </div>
+              </div>
+
+              <div class="refund-side">
+                <div v-if="item.status === 'pending'" class="refund-quick-actions" @click.stop>
+                  <button
+                    type="button"
+                    class="qa-btn qa-approve"
+                    :disabled="processing === item.id"
+                    @click="handleApprove(item)"
+                  >通过</button>
+                  <button
+                    type="button"
+                    class="qa-btn qa-reject"
+                    :disabled="processing === item.id"
+                    @click="handleReject(item)"
+                  >驳回</button>
+                </div>
+                <svg
+                  class="refund-chevron"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                ><polyline points="9 18 15 12 9 6"/></svg>
+              </div>
+            </div>
+          </article>
+        </template>
+        <EmptyState v-if="loading" loading class="empty-state" />
+        <EmptyState v-else-if="list.length === 0" class="empty-state" text="暂无退款申请" />
       </div>
     </section>
 
@@ -487,12 +497,12 @@ onMounted(fetchList)
                   <div class="od-progress">
                     <div class="od-progress-top">
                       <span>完成进度</span>
-                      <strong :style="{ color: osc(order.order_status).color }">{{ orderProgress(order) }}%</strong>
+                      <strong class="od-progress-pct">{{ orderProgress(order) }}%</strong>
                     </div>
                     <div class="od-progress-bar">
                       <div
                         class="od-progress-fill"
-                        :style="{ width: orderProgress(order) + '%', background: osc(order.order_status).color }"
+                        :style="{ width: orderProgress(order) + '%' }"
                       ></div>
                     </div>
                   </div>
@@ -507,7 +517,7 @@ onMounted(fetchList)
                   </button>
                 </div>
               </template>
-              <div v-else class="drawer-empty">暂无订单数据</div>
+              <EmptyState v-else compact text="暂无订单数据" class="drawer-empty" />
             </div>
           </div>
         </Transition>
@@ -562,11 +572,15 @@ onMounted(fetchList)
 .hero-bg {
   position: absolute;
   inset: 0;
-  background: #fff;
+  background:
+    radial-gradient(ellipse 80% 60% at 0% 0%, rgba(47, 109, 246, 0.12), transparent 55%),
+    radial-gradient(ellipse 50% 40% at 100% 100%, rgba(47, 109, 246, 0.06), transparent 50%),
+    linear-gradient(180deg, #fff 0%, #fafbff 100%);
 }
 
 .hero-content {
   position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -645,18 +659,25 @@ onMounted(fetchList)
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 16px 22px;
+  gap: 12px;
+  padding: 14px 16px 12px;
   border-bottom: 1px solid #f0f2f7;
-  background: linear-gradient(180deg, #fcfdff, #fff);
+  background: #fff;
   flex-wrap: wrap;
 }
 
-.toolbar-left {
+.toolbar-head {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+  min-width: 0;
+}
+
+.toolbar-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--rp-text);
 }
 
 .total-badge {
@@ -739,71 +760,82 @@ onMounted(fetchList)
   box-shadow: 0 4px 12px rgba(239, 68, 68, 0.22);
 }
 
-/* ========== 表格 ========== */
-.table-wrap {
-  overflow-x: auto;
-  background: #f8faff;
+/* ========== 申请列表 ========== */
+.refund-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 14px;
+  min-height: 200px;
+  background: linear-gradient(180deg, #f8faff 0%, #f4f7fb 100%);
 }
 
-.refund-table {
-  width: 100%;
-  min-width: 980px;
-  border-collapse: separate;
-  border-spacing: 0;
-  font-size: 13px;
-  table-layout: fixed;
-}
-
-.col-user { width: 88px; }
-.col-batch { width: 18%; }
-.col-money { width: 96px; }
-.col-reason { width: 12%; }
-.col-status { width: 92px; }
-.col-time { width: 132px; }
-.col-reviewer { width: 80px; }
-.col-remark { width: 10%; }
-.col-action { width: 220px; }
-
-.refund-table th {
-  text-align: left;
-  padding: 14px 16px;
-  font-weight: 800;
-  color: var(--rp-text-3);
-  font-size: 11px;
-  letter-spacing: 0.4px;
-  text-transform: uppercase;
+.refund-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
   background: #fff;
-  border-bottom: 1px solid #eef2f7;
-  white-space: nowrap;
-  position: sticky;
-  top: 0;
-  z-index: 1;
+  box-shadow: 0 2px 10px rgba(21, 32, 51, 0.05);
+  overflow: hidden;
+  transition: border-color 180ms ease, box-shadow 180ms ease;
 }
 
-.th-action,
-.action-cell {
-  text-align: right;
+.refund-card.is-pending {
+  border-color: #f5d79a;
 }
 
-.refund-table td {
-  padding: 16px;
-  color: var(--rp-text-2);
-  border-bottom: 1px solid #eef2f7;
-  vertical-align: middle;
-  background: #fff;
+.refund-card:hover {
+  border-color: #b8ccfa;
+  box-shadow: 0 6px 20px rgba(47, 109, 246, 0.08);
 }
 
-.data-row {
+.refund-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 12px 12px 10px;
   cursor: pointer;
-  transition: background 180ms ease;
+  text-align: left;
 }
 
-.data-row:hover td {
-  background: #fafbff;
+.refund-row:hover {
+  background: linear-gradient(180deg, #fbfcff 0%, #fff 100%);
 }
 
-.data-row:last-child td {
-  border-bottom: none;
+.refund-row:focus-visible {
+  outline: 2px solid rgba(47, 109, 246, 0.35);
+  outline-offset: -2px;
+}
+
+.refund-body {
+  min-width: 0;
+  flex: 1;
+  padding-top: 1px;
+}
+
+.refund-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.refund-user {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--rp-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.refund-amount {
+  flex-shrink: 0;
+  font-size: 14px;
+  font-weight: 900;
+  color: var(--rp-accent);
+  font-variant-numeric: tabular-nums;
 }
 
 .mono {
@@ -811,43 +843,108 @@ onMounted(fetchList)
   font-size: 12px;
 }
 
-.batch-cell {
-  word-break: break-all;
-  line-height: 1.45;
-  color: var(--rp-text);
+.refund-batch {
+  margin: 4px 0 0;
+  color: var(--rp-text-2);
   font-weight: 600;
-}
-
-.user-cell {
-  font-weight: 800;
-  color: var(--rp-text);
-  white-space: nowrap;
-}
-
-.money-cell {
-  font-weight: 900;
-  color: var(--rp-accent);
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
-.reason-cell {
-  max-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--rp-text-3);
 }
 
-.reviewer-cell {
-  white-space: nowrap;
+.refund-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
 }
 
-.time-cell {
-  white-space: nowrap;
-  color: var(--rp-text-3);
+.refund-time {
   font-size: 12px;
+  color: var(--rp-text-3);
   font-variant-numeric: tabular-nums;
+}
+
+.refund-tag {
+  max-width: 160px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: var(--rp-text-3);
+  font-size: 11px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.refund-tag--reason {
+  max-width: 200px;
+  background: #f8faff;
+  border: 1px solid #eef2f7;
+}
+
+.refund-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+  align-self: stretch;
+  padding-top: 2px;
+}
+
+.refund-quick-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.qa-btn {
+  min-width: 52px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: none;
+  font-size: 12px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.qa-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.qa-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.qa-approve {
+  background: linear-gradient(135deg, #42c978, #38b2ac);
+  color: #fff;
+}
+
+.qa-reject {
+  background: #fff1f0;
+  color: #ef4444;
+  border: 1px solid #ffccc7;
+}
+
+.refund-chevron {
+  flex-shrink: 0;
+  color: #c0c9d6;
+  transition: color 180ms ease, transform 180ms ease;
+}
+
+.refund-row:hover .refund-chevron {
+  color: var(--rp-primary);
+  transform: translateX(2px);
 }
 
 .status-pill {
@@ -861,70 +958,6 @@ onMounted(fetchList)
   font-weight: 800;
   white-space: nowrap;
   border: 1px solid transparent;
-}
-
-.action-cell {
-  width: 220px;
-  padding-right: 18px !important;
-}
-
-.action-btns {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
-.action-placeholder {
-  color: #d0d7e2;
-  font-size: 13px;
-}
-
-.tbl-act-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 32px;
-  min-width: 64px;
-  padding: 6px 14px;
-  font-size: 12px;
-  font-weight: 700;
-  border: none;
-  border-radius: 9px;
-  cursor: pointer;
-  white-space: nowrap;
-  flex-shrink: 0;
-  transition: transform 180ms ease, opacity 180ms ease, box-shadow 180ms ease;
-}
-
-.tbl-act-btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-}
-
-.tbl-act-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  transform: none;
-}
-
-.tbl-act-btn.approve {
-  background: linear-gradient(135deg, #42c978, #38b2ac);
-  color: #fff;
-  box-shadow: 0 3px 10px rgba(66, 201, 120, 0.22);
-}
-
-.tbl-act-btn.reject {
-  background: #fff1f0;
-  color: #ef4444;
-  border: 1px solid #ffccc7;
-}
-
-.tbl-act-btn.full-refund {
-  background: linear-gradient(135deg, #f5a623, #f09d3d);
-  color: #fff;
-  min-width: 84px;
-  box-shadow: 0 3px 10px rgba(245, 166, 35, 0.22);
 }
 
 /* ========== 抽屉 / 弹窗按钮（复用） ========== */
@@ -1556,9 +1589,16 @@ onMounted(fetchList)
   overflow: hidden;
 }
 
+.od-progress-pct {
+  font-size: 13px;
+  font-weight: 900;
+  color: var(--rp-primary);
+}
+
 .od-progress-fill {
   height: 100%;
   border-radius: 999px;
+  background: var(--rp-primary);
   transition: width 0.35s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
@@ -1668,15 +1708,32 @@ onMounted(fetchList)
     font-size: 12px;
   }
 
-  .refund-table { min-width: 860px; }
-
-  .refund-table th,
-  .refund-table td {
-    padding: 12px 10px;
-    font-size: 12px;
+  .refund-list {
+    padding: 10px 10px 12px;
+    gap: 8px;
   }
 
-  .col-action { width: 200px; }
+  .refund-row {
+    flex-wrap: wrap;
+    padding: 10px;
+  }
+
+  .refund-side {
+    flex-direction: row;
+    align-items: center;
+    width: 100%;
+    justify-content: flex-end;
+    padding-top: 0;
+  }
+
+  .refund-quick-actions {
+    flex-direction: row;
+  }
+
+  .qa-btn {
+    min-width: 64px;
+    height: 32px;
+  }
 
   /* ========== 抽屉：手机底部 sheet ========== */
   .drawer-mask {

@@ -7,6 +7,26 @@ import { authRequired } from '../middleware/auth.js'
 const router = Router()
 const typeLabels = { read: '阅读', like: '点赞', impression: '曝光' }
 
+function subordinateDisplayName(r) {
+  return r.subordinate_nickname || r.subordinate_real_name || r.subordinate_username
+    || ((r.remark || '').match(/（([^）]+)）/) || [])[1] || ''
+}
+
+function agentDisplayName(r) {
+  return r.agent_nickname || r.agent_real_name || r.agent_username || ''
+}
+
+function commissionNotifyLabel(r, isAdmin) {
+  const agentName = agentDisplayName(r)
+  const subName = subordinateDisplayName(r)
+  if (isAdmin) {
+    if (agentName && subName) return `代理 ${agentName} · 下级 ${subName} 分润`
+    if (agentName) return `代理 ${agentName} 分润`
+    return r.remark || '下级下单分润'
+  }
+  return subName ? `下级 ${subName} 下单分润` : (r.remark || '下级下单分润')
+}
+
 // 所有任务接口需要登录
 router.use(authRequired)
 
@@ -347,7 +367,26 @@ router.get('/dashboard', async (req, res) => {
       Task.listAccountRecords({ userIds: [myId], page: 1, pageSize: 10 }),
       Task.listBatches({ userIds, page: 1, pageSize: 5 }),
       Task.getDailyStats(userIds, 7),
-      db('account_records').where({ user_id: myId, record_type: 'agent_commission' }).orderBy('created_at', 'desc').limit(5)
+      (() => {
+        const q = db('account_records as ar')
+          .leftJoin('orders as o', 'o.id', 'ar.order_id')
+          .leftJoin('users as sub', 'sub.id', 'o.user_id')
+          .leftJoin('users as agent', 'agent.id', 'ar.user_id')
+          .where({ 'ar.record_type': 'agent_commission' })
+        if (!isAdmin) q.where({ 'ar.user_id': myId })
+        return q
+          .select(
+            'ar.*',
+            'sub.username as subordinate_username',
+            'sub.nickname as subordinate_nickname',
+            'sub.real_name as subordinate_real_name',
+            'agent.username as agent_username',
+            'agent.nickname as agent_nickname',
+            'agent.real_name as agent_real_name'
+          )
+          .orderBy('ar.created_at', 'desc')
+          .limit(isAdmin ? 10 : 5)
+      })()
     ])
 
     // 组装通知
@@ -378,7 +417,16 @@ router.get('/dashboard', async (req, res) => {
       notifications.push({ id: `adj-${r.id}`, type: isAdd ? 'recharge' : 'order_fail', title: `管理员${isAdd ? '加款' : '扣款'} ¥${parseFloat(r.actual_paid_amount || 0).toFixed(2)}`, desc: r.reason_message || '', time: r.created_at })
     }
     for (const r of commissions) {
-      notifications.push({ id: `comm-${r.id}`, type: 'recharge', title: `下级下单分润 +¥${parseFloat(r.net_amount || 0).toFixed(2)}`, desc: `余额 ¥${parseFloat(r.after_available_amount || 0).toFixed(2)}`, time: r.created_at })
+      const agentName = agentDisplayName(r)
+      const label = commissionNotifyLabel(r, isAdmin)
+      const balance = parseFloat(r.after_available_amount || 0).toFixed(2)
+      notifications.push({
+        id: `comm-${r.id}`,
+        type: 'recharge',
+        title: `${label} +¥${parseFloat(r.net_amount || 0).toFixed(2)}`,
+        desc: isAdmin && agentName ? `入账代理 ${agentName} · 余额 ¥${balance}` : `余额 ¥${balance}`,
+        time: r.created_at
+      })
     }
     notifications.sort((a, b) => new Date(b.time) - new Date(a.time))
 

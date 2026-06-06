@@ -1,7 +1,7 @@
-import crypto from 'crypto'
 import db from '../db.js'
 import { fetchNoteViewCount, fetchNoteLikeCount } from './noteApi.js'
 import { canTriggerSnapshotSupplement } from './supplementPolicy.js'
+import { uniqueCode } from '../utils/idGen.js'
 
 const POLL_INTERVAL = 60_000
 const DELAY_MINUTES = 5
@@ -69,12 +69,10 @@ async function autoRequestSupplement(order, shortageInfo) {
     .first()
   if (existing) return false
 
-  const ts = Date.now().toString(36).toUpperCase()
-  const hex = crypto.randomBytes(3).toString('hex').toUpperCase()
   const now = new Date()
 
   await db('order_replenishment_records').insert({
-    replenishment_no: `REP-${ts}-${hex}`,
+    replenishment_no: await uniqueCode(db, 'order_replenishment_records', 'replenishment_no'),
     order_id: order.id,
     order_no: order.order_no,
     batch_id: order.batch_id,

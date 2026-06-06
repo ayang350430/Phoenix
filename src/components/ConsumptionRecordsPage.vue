@@ -1,26 +1,21 @@
 <script setup>
 import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
-  ElButton,
   ElDatePicker,
-  ElForm,
-  ElFormItem,
   ElInput,
   ElOption,
   ElPagination,
   ElSelect
 } from 'element-plus'
-import 'element-plus/es/components/button/style/css'
 import 'element-plus/es/components/date-picker/style/css'
-import 'element-plus/es/components/form/style/css'
-import 'element-plus/es/components/form-item/style/css'
 import 'element-plus/es/components/input/style/css'
 import 'element-plus/es/components/option/style/css'
 import 'element-plus/es/components/pagination/style/css'
 import 'element-plus/es/components/select/style/css'
+import EmptyState from './EmptyState.vue'
 
 const ws = inject('workspace')
-const { getToken, isAdmin, balance, fetchBalance, refreshKey } = ws
+const { getToken, isAdmin, isAgent, balance, fetchBalance, refreshKey } = ws
 
 const loading = ref(false)
 const records = ref([])
@@ -32,11 +27,17 @@ const filterType = ref('')
 const filterDirection = ref('')
 const filterOrderNo = ref('')
 const dateRange = ref(null)
+const mobileDateStart = ref('')
+const mobileDateEnd = ref('')
 const filterUserId = ref('')
 
 const userKeyword = ref('')
 const userOptions = ref([])
 const userSearchLoading = ref(false)
+
+// 窄屏状态
+const isNarrow = ref(false)
+let narrowMq = null
 
 const recordTypeMap = {
   order_charge: '订单扣款',
@@ -67,11 +68,25 @@ const pageHeroDesc = computed(() =>
     : '查看您的消费、充值与退款流水'
 )
 
-// 窄屏状态
-const isNarrow = ref(false)
-let narrowMq = null
+const isRegularUser = computed(() => !isAdmin.value && !isAgent.value)
+const showMobileFilter = computed(() => isNarrow.value)
 
-// 同步窄屏状态 
+function syncMobileDatesFromRange() {
+  mobileDateStart.value = dateRange.value?.[0] || ''
+  mobileDateEnd.value = dateRange.value?.[1] || ''
+}
+
+function syncRangeFromMobileDates() {
+  if (!mobileDateStart.value && !mobileDateEnd.value) {
+    dateRange.value = null
+    return
+  }
+  dateRange.value = [mobileDateStart.value || '', mobileDateEnd.value || '']
+}
+
+watch(dateRange, syncMobileDatesFromRange, { immediate: true })
+
+// 同步窄屏状态
 function syncNarrow() {
   isNarrow.value = narrowMq?.matches ?? false
 }
@@ -93,6 +108,21 @@ function fmtMoney(v) {
 
 // 记录标签
 function recordLabel(r) {
+  if (isAgentCommissionType(r)) {
+    const sub = subordinateName(r)
+    const agent = displayUser(r)
+    if (isAdmin.value && agent) {
+      if (r.record_type === 'agent_commission_refund') {
+        return sub ? `代理 ${agent} · 下级 ${sub} 分润扣回` : `代理 ${agent} 分润扣回`
+      }
+      return sub ? `代理 ${agent} · 下级 ${sub} 分润` : `代理 ${agent} 分润`
+    }
+    if (sub) {
+      return r.record_type === 'agent_commission_refund'
+        ? `下级 ${sub} 退款扣回分润`
+        : `下级 ${sub} 下单分润`
+    }
+  }
   return r.remark || recordTypeMap[r.record_type] || r.record_type || '-'
 }
 
@@ -112,6 +142,28 @@ function displayUser(r) {
   return r.nickname || r.real_name || r.username || `用户#${r.user_id}`
 }
 
+function isAgentCommissionType(r) {
+  return r?.record_type === 'agent_commission' || r?.record_type === 'agent_commission_refund'
+}
+
+function subordinateName(r) {
+  return r.subordinate_nickname || r.subordinate_real_name || r.subordinate_username || ''
+}
+
+/** 该订单代理当初拿到的分润总额 */
+function agentCommissionEarned(r) {
+  const fromApi = parseFloat(r.commission_total)
+  if (Number.isFinite(fromApi) && fromApi > 0) return fromApi
+  if (r?.record_type === 'agent_commission') return recordAmount(r)
+  return 0
+}
+
+function agentClawbackAmount(r) {
+  if (r?.record_type !== 'agent_commission_refund') return 0
+  const n = parseFloat(r.clawback_amount ?? r.actual_paid_amount ?? r.refund_amount ?? r.net_amount)
+  return Number.isFinite(n) && n > 0 ? n : recordAmount(r)
+}
+
 // 格式化短时间
 function fmtShortTime(dt) {
   if (!dt) return '-'
@@ -124,6 +176,186 @@ function fmtShortTime(dt) {
 function typeBadgeLabel(r) {
   return recordTypeMap[r.record_type] || r.record_type || '其他'
 }
+
+const expandedRecordId = ref(null)
+
+const CR_EXPAND_MS = 320
+const CR_EXPAND_EASE = 'cubic-bezier(0.22, 1, 0.36, 1)'
+
+function crExpandEl(el) {
+  return el instanceof HTMLElement ? el : null
+}
+
+function crExpandClear(el) {
+  const node = crExpandEl(el)
+  if (!node) return
+  node.style.height = ''
+  node.style.overflow = ''
+  node.style.transition = ''
+}
+
+function onCrBeforeEnter(el) {
+  const node = crExpandEl(el)
+  if (!node) return
+  crExpandClear(node)
+  node.style.height = '0'
+  node.style.overflow = 'hidden'
+}
+
+function onCrEnter(el, done) {
+  const node = crExpandEl(el)
+  if (!node) {
+    done()
+    return
+  }
+  let finished = false
+  const finish = () => {
+    if (finished) return
+    finished = true
+    node.removeEventListener('transitionend', onEnd)
+    crExpandClear(node)
+    node.style.height = 'auto'
+    done()
+  }
+  const onEnd = (e) => {
+    if (e.target === node && e.propertyName === 'height') finish()
+  }
+  const run = () => {
+    const target = node.scrollHeight
+    node.style.transition = `height ${CR_EXPAND_MS}ms ${CR_EXPAND_EASE}`
+    void node.offsetHeight
+    node.style.height = `${target}px`
+    node.addEventListener('transitionend', onEnd)
+    window.setTimeout(finish, CR_EXPAND_MS + 40)
+  }
+  requestAnimationFrame(() => requestAnimationFrame(run))
+}
+
+function onCrBeforeLeave(el) {
+  const node = crExpandEl(el)
+  if (!node) return
+  crExpandClear(node)
+  node.style.height = `${node.scrollHeight}px`
+  node.style.overflow = 'hidden'
+}
+
+function onCrLeave(el, done) {
+  const node = crExpandEl(el)
+  if (!node) {
+    done()
+    return
+  }
+  let finished = false
+  const finish = () => {
+    if (finished) return
+    finished = true
+    node.removeEventListener('transitionend', onEnd)
+    crExpandClear(node)
+    done()
+  }
+  const onEnd = (e) => {
+    if (e.target === node && e.propertyName === 'height') finish()
+  }
+  const run = () => {
+    node.style.transition = `height ${CR_EXPAND_MS}ms ${CR_EXPAND_EASE}`
+    void node.offsetHeight
+    node.style.height = '0'
+    node.addEventListener('transitionend', onEnd)
+    window.setTimeout(finish, CR_EXPAND_MS + 40)
+  }
+  requestAnimationFrame(run)
+}
+
+function hasRecordDetail(r) {
+  return !!(
+    (isAdmin.value && displayUser(r)) ||
+    (isAgentCommissionType(r) && subordinateName(r)) ||
+    r.order_no ||
+    r.record_no ||
+    isAgentCommissionType(r) ||
+    r.reason_message ||
+    (r.remark && r.remark !== recordLabel(r))
+  )
+}
+
+function toggleRecord(r) {
+  if (!hasRecordDetail(r)) return
+  expandedRecordId.value = expandedRecordId.value === r.id ? null : r.id
+}
+
+function showTypeTag(r) {
+  return typeBadgeLabel(r) !== recordLabel(r)
+}
+
+// ========== 订单快捷预览 ==========
+const previewVisible = ref(false)
+const previewLoading = ref(false)
+const previewOrder = ref(null)
+const previewError = ref('')
+const previewAvatarFailed = ref(false)
+
+const orderStatusConf = {
+  pending: { label: '待处理', color: '#9aa5b5' },
+  running: { label: '进行中', color: '#5b8def' },
+  processing: { label: '处理中', color: '#5b8def' },
+  completed: { label: '已完成', color: '#22a858' },
+  partial_completed: { label: '部分完成', color: '#f5a623' },
+  refunding: { label: '退款中', color: '#f5a623' },
+  refunded: { label: '已退款', color: '#e8a735' },
+  failed: { label: '失败', color: '#e85d5d' },
+  cancelled: { label: '已取消', color: '#9aa5b5' },
+  stopped: { label: '已停止', color: '#9aa5b5' }
+}
+const orderTypeMap = { read: '阅读', like: '点赞', impression: '曝光', collect: '收藏', comment: '评论', view: '阅读' }
+
+function osc(s) { return orderStatusConf[s] || { label: s || '未知', color: '#9aa5b5' } }
+function previewTypeLabel(o) {
+  if (o?.product_name) return o.product_name.replace(/^小红书/, '')
+  return orderTypeMap[o?.target_type] || o?.target_type || '-'
+}
+function previewProgress(o) {
+  if (typeof o?.progress === 'number') return o.progress
+  const t = o?.ordered_quantity || 0
+  return t ? Math.min(100, Math.round((o?.completed_quantity || 0) / t * 100)) : 0
+}
+
+async function openOrderPreview(r) {
+  const orderNo = r?.order_no
+  if (!orderNo) return
+  previewVisible.value = true
+  previewLoading.value = true
+  previewOrder.value = null
+  previewError.value = ''
+  previewAvatarFailed.value = false
+  try {
+    let order = null
+    // 主：按 order_no 查（稳定主键，天然排除 order_id 复用的孤儿；当前会返回含已退款订单）
+    const res = await fetch('/api/batch/orders/lookup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken()}` },
+      body: JSON.stringify({ batch_nos: [orderNo] })
+    })
+    const data = await res.json()
+    const list = data?.data?.orders || []
+    order = list.find(o => o.order_no === orderNo) || (list.length === 1 ? list[0] : null)
+    // 兜底：lookup 未命中时按 order_id 查，并校验 order_no 一致（避免历史孤儿指到错订单）
+    if (!order && r.order_id) {
+      const res2 = await fetch(`/api/tasks/orders/${r.order_id}`, {
+        headers: { Authorization: `Bearer ${getToken()}` }
+      })
+      const d2 = await res2.json()
+      const o2 = d2?.code === 0 ? d2.data : null
+      if (o2 && o2.order_no === orderNo) order = o2
+    }
+    if (order) previewOrder.value = order
+    else previewError.value = '未找到该订单'
+  } catch {
+    previewError.value = '加载失败，请重试'
+  } finally {
+    previewLoading.value = false
+  }
+}
+function closeOrderPreview() { previewVisible.value = false }
 
 // 汇总
 const summary = computed(() => {
@@ -199,6 +431,7 @@ async function fetchRecords() {
 // 执行搜索
 function doSearch() {
   page.value = 1
+  expandedRecordId.value = null
   fetchRecords()
 }
 
@@ -218,6 +451,7 @@ function resetFilters() {
 // 分页变化
 function onPageChange(p) {
   page.value = p
+  expandedRecordId.value = null
   fetchRecords()
 }
 
@@ -302,96 +536,190 @@ onUnmounted(() => {
     </div>
 
     <section class="panel">
-      <div class="panel-toolbar">
-      <el-form
-        class="filter-form"
-        :class="{ 'filter-form--narrow': isNarrow }"
-        inline
-        label-position="top"
-        :size="filterSize"
-        @submit.prevent="doSearch"
-      >
-        <el-form-item v-if="isAdmin" label="用户" class="filter-item filter-item--full filter-item--user">
-          <el-select
-            v-model="filterUserId"
-            class="filter-control"
-            :size="filterSize"
-            filterable
-            remote
-            clearable
-            placeholder="搜索用户名/昵称"
-            :remote-method="searchUsersRemote"
-            :loading="userSearchLoading"
-            @change="onUserFilterChange"
-          >
-            <el-option
-              v-for="u in userOptions"
-              :key="u.id"
-              :label="userOptionLabel(u)"
-              :value="String(u.id)"
+      <div class="consumption-filter">
+        <div class="consumption-filter-head">
+          <span class="consumption-filter-title">流水明细</span>
+          <span class="consumption-filter-count">共 <strong>{{ total }}</strong> 条</span>
+        </div>
+        <form class="consumption-filter-form" @submit.prevent="doSearch">
+          <!-- 手机端：单列筛选，避免多列下拉挤成空条 -->
+          <div v-if="showMobileFilter" class="consumption-filter-mobile">
+            <el-select
+              v-if="isAdmin"
+              v-model="filterUserId"
+              class="cf-control cf-mobile-full"
+              size="small"
+              filterable
+              remote
+              clearable
+              placeholder="搜索用户"
+              :remote-method="searchUsersRemote"
+              :loading="userSearchLoading"
+              @change="onUserFilterChange"
+            >
+              <el-option
+                v-for="u in userOptions"
+                :key="u.id"
+                :label="userOptionLabel(u)"
+                :value="String(u.id)"
+              />
+            </el-select>
+
+            <div v-if="!isRegularUser" class="cf-mobile-row">
+              <el-select
+                v-model="filterType"
+                class="cf-control cf-mobile-half"
+                size="small"
+                clearable
+                placeholder="全部类型"
+              >
+                <el-option
+                  v-for="opt in typeSelectOptions"
+                  :key="opt.value || 'all'"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </el-select>
+              <el-select
+                v-model="filterDirection"
+                class="cf-control cf-mobile-half"
+                size="small"
+                clearable
+                placeholder="全部方向"
+              >
+                <el-option
+                  v-for="opt in directionOptions"
+                  :key="opt.value || 'all'"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </el-select>
+            </div>
+
+            <el-input
+              v-if="!isRegularUser"
+              v-model="filterOrderNo"
+              class="cf-control cf-mobile-full"
+              size="small"
+              clearable
+              placeholder="订单号"
+              @keyup.enter="doSearch"
             />
-          </el-select>
-        </el-form-item>
 
-        <el-form-item label="类型" class="filter-item filter-item--half">
-          <el-select v-model="filterType" class="filter-control" :size="filterSize" placeholder="全部类型">
-            <el-option
-              v-for="opt in typeSelectOptions"
-              :key="opt.value || 'all'"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </el-select>
-        </el-form-item>
-
-        <el-form-item label="方向" class="filter-item filter-item--half">
-          <el-select v-model="filterDirection" class="filter-control" :size="filterSize" placeholder="全部">
-            <el-option
-              v-for="opt in directionOptions"
-              :key="opt.value || 'all'"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </el-select>
-        </el-form-item>
-
-        <el-form-item label="订单号" class="filter-item filter-item--full filter-item--order">
-          <el-input
-            v-model="filterOrderNo"
-            class="filter-control filter-order-input"
-            :size="filterSize"
-            clearable
-            placeholder="订单号"
-            @keyup.enter="doSearch"
-          />
-        </el-form-item>
-
-        <el-form-item label="时间范围" class="filter-item filter-item--full filter-item--date">
-          <el-date-picker
-            v-model="dateRange"
-            class="filter-control filter-date"
-            :size="filterSize"
-            type="daterange"
-            range-separator="至"
-            :start-placeholder="isNarrow ? '开始' : '开始日期'"
-            :end-placeholder="isNarrow ? '结束' : '结束日期'"
-            value-format="YYYY-MM-DD"
-            clearable
-          />
-        </el-form-item>
-
-        <el-form-item label=" " class="filter-item filter-item--full filter-item--actions">
-          <div class="filter-actions">
-            <el-button type="primary" @click="doSearch">搜索</el-button>
-            <el-button @click="resetFilters">重置</el-button>
+            <div class="cf-date-row">
+              <el-date-picker
+                v-model="mobileDateStart"
+                class="cf-control cf-date-single"
+                type="date"
+                size="small"
+                placeholder="开始"
+                value-format="YYYY-MM-DD"
+                format="MM-DD"
+                clearable
+                :editable="false"
+                popper-class="cp-mobile-date-popper"
+                @change="syncRangeFromMobileDates"
+              />
+              <span class="cf-date-sep">至</span>
+              <el-date-picker
+                v-model="mobileDateEnd"
+                class="cf-control cf-date-single"
+                type="date"
+                size="small"
+                placeholder="结束"
+                value-format="YYYY-MM-DD"
+                format="MM-DD"
+                clearable
+                :editable="false"
+                popper-class="cp-mobile-date-popper"
+                @change="syncRangeFromMobileDates"
+              />
+            </div>
+            <div class="cf-actions cf-actions--mobile">
+              <button type="submit" class="cf-btn cf-btn--primary cf-btn--mobile">筛选</button>
+              <button type="button" class="cf-btn cf-btn--ghost cf-btn--mobile" @click="resetFilters">重置</button>
+            </div>
           </div>
-        </el-form-item>
-      </el-form>
-      </div>
 
-      <div class="list-header">
-        <h2 class="list-title">流水明细</h2>
-        <span class="list-count">共 {{ total }} 条</span>
+          <div v-else class="consumption-filter-grid" :class="{ 'is-admin': isAdmin }">
+            <el-select
+              v-if="isAdmin"
+              v-model="filterUserId"
+              class="cf-control cf-user"
+              :size="filterSize"
+              filterable
+              remote
+              clearable
+              placeholder="搜索用户"
+              :remote-method="searchUsersRemote"
+              :loading="userSearchLoading"
+              @change="onUserFilterChange"
+            >
+              <el-option
+                v-for="u in userOptions"
+                :key="u.id"
+                :label="userOptionLabel(u)"
+                :value="String(u.id)"
+              />
+            </el-select>
+
+            <el-select
+              v-model="filterType"
+              class="cf-control"
+              :size="filterSize"
+              clearable
+              placeholder="全部类型"
+            >
+              <el-option
+                v-for="opt in typeSelectOptions"
+                :key="opt.value || 'all'"
+                :label="opt.label"
+                :value="opt.value"
+              />
+            </el-select>
+
+            <el-select
+              v-model="filterDirection"
+              class="cf-control cf-direction"
+              :size="filterSize"
+              clearable
+              placeholder="全部方向"
+            >
+              <el-option
+                v-for="opt in directionOptions"
+                :key="opt.value || 'all'"
+                :label="opt.label"
+                :value="opt.value"
+              />
+            </el-select>
+
+            <el-input
+              v-model="filterOrderNo"
+              class="cf-control cf-order"
+              :size="filterSize"
+              clearable
+              placeholder="订单号"
+              @keyup.enter="doSearch"
+            />
+
+            <el-date-picker
+              v-model="dateRange"
+              class="cf-control cf-date"
+              :size="filterSize"
+              type="daterange"
+              range-separator="至"
+              :start-placeholder="isNarrow ? '开始' : '开始日期'"
+              :end-placeholder="isNarrow ? '结束' : '结束日期'"
+              value-format="YYYY-MM-DD"
+              clearable
+            />
+
+            <div class="cf-actions">
+              <button type="submit" class="cf-btn cf-btn--primary">{{ isNarrow ? '筛选' : '搜索' }}</button>
+              <button type="button" class="cf-btn cf-btn--ghost" @click="resetFilters">重置</button>
+            </div>
+          </div>
+        </form>
       </div>
 
       <div v-loading="loading" class="record-list">
@@ -400,50 +728,113 @@ onUnmounted(() => {
             v-for="r in records"
             :key="r.id"
             class="record-card"
-            :class="isIncome(r) ? 'is-income' : 'is-expense'"
+            :class="[
+              isIncome(r) ? 'is-income' : 'is-expense',
+              { 'is-expanded': expandedRecordId === r.id, 'is-clickable': hasRecordDetail(r) }
+            ]"
           >
-            <div class="record-icon" aria-hidden="true">
-              <svg v-if="isIncome(r)" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
-              <svg v-else width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
-            </div>
-
-            <div class="record-main">
+            <div
+              class="record-clickable"
+              :role="hasRecordDetail(r) ? 'button' : undefined"
+              :tabindex="hasRecordDetail(r) ? 0 : undefined"
+              @click="toggleRecord(r)"
+              @keyup.enter="toggleRecord(r)"
+            >
               <div class="record-head">
-                <div class="record-title-wrap">
-                  <strong class="record-title">{{ recordLabel(r) }}</strong>
-                  <span class="record-type-tag">{{ typeBadgeLabel(r) }}</span>
+                <div class="record-icon" aria-hidden="true">
+                  <svg v-if="isIncome(r)" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+                  <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>
                 </div>
-                <div class="record-amount-wrap">
-                  <span class="record-amount">{{ isIncome(r) ? '+' : '-' }}¥{{ fmtMoney(recordAmount(r)) }}</span>
+
+                <div class="record-body">
+                  <div class="record-title-row">
+                    <p class="record-title">{{ recordLabel(r) }}</p>
+                    <span class="record-amount">{{ isIncome(r) ? '+' : '-' }}¥{{ fmtMoney(recordAmount(r)) }}</span>
+                    <svg
+                      v-if="hasRecordDetail(r)"
+                      class="record-chevron"
+                      :class="{ 'record-chevron--open': expandedRecordId === r.id }"
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    ><polyline points="9 18 15 12 9 6"/></svg>
+                  </div>
+                  <div class="record-meta-line">
+                    <time class="record-time">{{ fmtShortTime(r.created_at) }}</time>
+                    <span
+                      v-if="showTypeTag(r)"
+                      class="record-type-tag"
+                      :class="isIncome(r) ? 'is-in' : 'is-out'"
+                    >{{ typeBadgeLabel(r) }}</span>
+                  </div>
                 </div>
               </div>
-
-              <div class="record-meta">
-                <span v-if="isAdmin" class="meta-chip meta-chip--user">{{ displayUser(r) }}</span>
-                <time class="meta-time">{{ fmtShortTime(r.created_at) }}</time>
-              </div>
-
-              <div v-if="r.order_no || r.record_no" class="record-ids">
-                <span v-if="r.order_no" class="id-line">
-                  <em>订单</em>{{ r.order_no }}
-                </span>
-                <span v-if="r.record_no" class="id-line">
-                  <em>流水</em>{{ r.record_no }}
-                </span>
-              </div>
-
-              <p v-if="r.reason_message" class="record-remark">{{ r.reason_message }}</p>
-              <p v-else-if="r.remark && r.remark !== recordLabel(r)" class="record-remark">{{ r.remark }}</p>
             </div>
+
+            <Transition
+              :css="false"
+              @before-enter="onCrBeforeEnter"
+              @enter="onCrEnter"
+              @before-leave="onCrBeforeLeave"
+              @leave="onCrLeave"
+            >
+              <div v-if="expandedRecordId === r.id" class="record-detail-wrap">
+                <div class="record-detail">
+                  <div v-if="isAdmin || (isAgentCommissionType(r) && subordinateName(r))" class="record-meta">
+                    <span v-if="isAdmin && isAgentCommissionType(r)" class="meta-chip meta-chip--agent">代理 {{ displayUser(r) }}</span>
+                    <span v-else-if="isAdmin && !isAgentCommissionType(r)" class="meta-chip meta-chip--user">{{ displayUser(r) }}</span>
+                    <span v-if="isAgentCommissionType(r) && subordinateName(r)" class="meta-chip meta-chip--sub">下级 {{ subordinateName(r) }}</span>
+                  </div>
+
+                  <div
+                    v-if="r.order_no || r.record_no || isAgentCommissionType(r)"
+                    class="record-ids"
+                  >
+                    <span
+                      v-if="isAgentCommissionType(r) && agentCommissionEarned(r) > 0"
+                      class="id-line id-line--comm"
+                    >
+                      <em>代理拿了</em>¥{{ fmtMoney(agentCommissionEarned(r)) }}
+                    </span>
+                    <span v-if="r.record_type === 'agent_commission_refund'" class="id-line id-line--claw">
+                      <em>代理扣回</em>¥{{ fmtMoney(agentClawbackAmount(r)) }}
+                    </span>
+                    <span v-if="r.order_no" class="id-line id-line--order">
+                      <em>订单</em>
+                      <button
+                        type="button"
+                        class="op-trigger"
+                        title="点击预览该订单"
+                        @click.stop="openOrderPreview(r)"
+                      >
+                        <span class="op-trigger-no">{{ r.order_no }}</span>
+                        <svg class="op-trigger-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                      </button>
+                    </span>
+                    <span v-if="r.record_no" class="id-line">
+                      <em>流水</em>{{ r.record_no }}
+                    </span>
+                  </div>
+
+                  <p v-if="r.reason_message" class="record-remark">{{ r.reason_message }}</p>
+                  <p v-else-if="r.remark && r.remark !== recordLabel(r)" class="record-remark">{{ r.remark }}</p>
+                </div>
+              </div>
+            </Transition>
           </article>
         </template>
-        <div v-else-if="!loading" class="empty-state">
-          <div class="empty-icon" aria-hidden="true">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-          </div>
-          <p class="empty-title">暂无消费记录</p>
-          <p class="empty-hint">调整筛选条件或稍后再试</p>
-        </div>
+        <EmptyState
+          v-else-if="!loading"
+          class="empty-state"
+          text="暂无消费记录"
+          description="调整筛选条件或稍后再试"
+        />
       </div>
 
       <div v-if="total > 0" class="pagination-wrap">
@@ -458,6 +849,69 @@ onUnmounted(() => {
         />
       </div>
     </section>
+
+    <!-- 订单快捷预览 -->
+    <Transition name="op-fade">
+      <div v-if="previewVisible" class="op-mask" @click.self="closeOrderPreview">
+        <div class="op-modal" role="dialog" aria-modal="true">
+          <div class="op-head">
+            <h3 class="op-title">订单预览</h3>
+            <button type="button" class="op-close" aria-label="关闭" @click="closeOrderPreview">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div class="op-body">
+            <div v-if="previewLoading" class="op-state">
+              <span class="op-spinner" aria-hidden="true"></span>加载中…
+            </div>
+            <div v-else-if="previewError" class="op-state op-state--err">{{ previewError }}</div>
+            <template v-else-if="previewOrder">
+              <div class="op-note">
+                <img
+                  v-if="previewOrder.avatar_url && !previewAvatarFailed"
+                  class="op-avatar"
+                  :src="previewOrder.avatar_url"
+                  alt=""
+                  loading="lazy"
+                  @error="previewAvatarFailed = true"
+                />
+                <div v-else class="op-avatar op-avatar--ph">{{ (previewOrder.title || '笔').trim().charAt(0) || '笔' }}</div>
+                <div class="op-note-info">
+                  <p class="op-note-title">{{ previewOrder.title || '未获取笔记标题' }}</p>
+                  <p v-if="previewOrder.author_name" class="op-note-author">{{ previewOrder.author_name }}</p>
+                </div>
+                <span
+                  class="op-status"
+                  :style="{ color: osc(previewOrder.order_status).color, background: osc(previewOrder.order_status).color + '14', borderColor: osc(previewOrder.order_status).color + '40' }"
+                >{{ osc(previewOrder.order_status).label }}</span>
+              </div>
+
+              <p class="op-order-no">{{ previewOrder.order_no }}</p>
+
+              <div class="op-metrics">
+                <div class="op-metric"><span>类型</span><strong>{{ previewTypeLabel(previewOrder) }}</strong></div>
+                <div class="op-metric"><span>下单数</span><strong>{{ previewOrder.ordered_quantity || 0 }}</strong></div>
+                <div class="op-metric"><span>完成数</span><strong>{{ previewOrder.completed_quantity || 0 }}</strong></div>
+                <div class="op-metric"><span>进度</span><strong>{{ previewProgress(previewOrder) }}%</strong></div>
+              </div>
+
+              <div class="op-progress"><div class="op-progress-fill" :style="{ width: previewProgress(previewOrder) + '%' }"></div></div>
+
+              <a
+                v-if="previewOrder.note_url"
+                class="op-link"
+                :href="previewOrder.note_url"
+                target="_blank"
+                rel="noopener"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+                <span>{{ previewOrder.note_url }}</span>
+              </a>
+            </template>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -627,126 +1081,278 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-.panel-toolbar {
-  background: linear-gradient(180deg, #fcfdff 0%, #f8faff 100%);
-  border-bottom: 1px solid #eef2f7;
+.consumption-filter {
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid #f0f2f7;
+  background: #fff;
 }
 
-.filter-form {
-  padding: 18px 22px 8px;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-end;
-  gap: 0 14px;
-}
-
-.filter-form :deep(.el-form-item) {
-  margin-bottom: 12px;
-  margin-right: 0;
-}
-
-.filter-form :deep(.el-form-item__label) {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--cp-text-3);
-  line-height: 1.2;
-  padding-bottom: 6px;
-}
-
-.filter-item {
-  margin-bottom: 12px;
-}
-
-.filter-item--user {
-  min-width: 220px;
-}
-
-.filter-item--date {
-  min-width: 280px;
-}
-
-.filter-item--actions :deep(.el-form-item__label) {
-  visibility: hidden;
-}
-
-.filter-control {
-  width: 160px;
-}
-
-.filter-item--user .filter-control {
-  width: 220px;
-}
-
-.filter-item--date .filter-control,
-.filter-date {
-  width: 280px !important;
-}
-
-.filter-form :deep(.el-input__wrapper),
-.filter-form :deep(.el-select__wrapper) {
-  border-radius: 10px;
-  box-shadow: 0 0 0 1px var(--cp-border) inset;
-}
-
-.filter-form :deep(.el-input__wrapper:hover),
-.filter-form :deep(.el-select__wrapper:hover) {
-  box-shadow: 0 0 0 1px rgba(47, 109, 246, 0.35) inset;
-}
-
-.filter-form :deep(.el-input__wrapper.is-focus),
-.filter-form :deep(.el-select__wrapper.is-focused) {
-  box-shadow: 0 0 0 1px var(--cp-primary) inset;
-}
-
-.filter-actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: nowrap;
-}
-
-.filter-form :deep(.el-button--primary) {
-  --el-button-bg-color: var(--cp-primary);
-  --el-button-border-color: var(--cp-primary);
-  --el-button-hover-bg-color: #2558d4;
-  --el-button-hover-border-color: #2558d4;
-  border-radius: 10px;
-  padding: 0 22px;
-  font-weight: 600;
-}
-
-.filter-form :deep(.el-button:not(.el-button--primary)) {
-  border-radius: 10px;
-  font-weight: 600;
-}
-
-.list-header {
+.consumption-filter-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 16px 22px 12px;
-  border-bottom: 1px solid #f0f2f7;
+  gap: 10px;
+  margin-bottom: 14px;
 }
 
-.list-title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 700;
+.consumption-filter-title {
+  font-size: 14px;
+  font-weight: 800;
   color: var(--cp-text);
 }
 
-.list-count {
+.consumption-filter-count {
   font-size: 12px;
+  color: var(--cp-text-3);
+}
+
+.consumption-filter-count strong {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--cp-primary);
+}
+
+.consumption-filter-mobile {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  --el-font-size-base: 11px;
+  --el-component-size: 30px;
+  font-size: 11px;
+}
+
+.cf-mobile-full {
+  width: 100%;
+  min-width: 0;
+}
+
+.cf-mobile-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.cf-mobile-half {
+  width: 100%;
+  min-width: 0;
+}
+
+.consumption-filter-mobile :deep(.cf-control) {
+  --el-font-size-base: 11px;
+  --el-component-size: 30px;
+  font-size: 11px;
+}
+
+.consumption-filter-mobile :deep(.cf-control .el-input__wrapper),
+.consumption-filter-mobile :deep(.cf-control .el-select__wrapper) {
+  min-height: 30px;
+  height: 30px;
+  font-size: 11px;
+  line-height: 28px;
+}
+
+.consumption-filter-mobile :deep(.cf-control input),
+.consumption-filter-mobile :deep(.cf-control .el-input__inner),
+.consumption-filter-mobile :deep(.cf-control .el-select__selected-item),
+.consumption-filter-mobile :deep(.cf-control .el-select__placeholder),
+.consumption-filter-mobile :deep(.cf-control .el-select__input),
+.consumption-filter-mobile :deep(.cf-control .el-select__input-calculator) {
+  font-size: 11px !important;
+}
+
+.consumption-filter-mobile :deep(.cf-control input::placeholder),
+.consumption-filter-mobile :deep(.cf-control .el-input__inner::placeholder) {
+  font-size: 11px !important;
+  color: #b0b8c6;
+}
+
+.consumption-filter-mobile :deep(.cf-control .el-select__caret),
+.consumption-filter-mobile :deep(.cf-control .el-input__prefix-inner),
+.consumption-filter-mobile :deep(.cf-control .el-input__suffix-inner) {
+  font-size: 12px;
+}
+
+.cf-date-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.cf-date-sep {
+  font-size: 11px;
   font-weight: 600;
   color: var(--cp-text-3);
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: #f1f5f9;
+  flex-shrink: 0;
+}
+
+.consumption-filter-mobile .cf-date-single {
+  width: 100% !important;
+  min-width: 0;
+}
+
+.consumption-filter-mobile :deep(.cf-date-single.el-date-editor) {
+  width: 100% !important;
+  height: 32px !important;
+  --el-date-editor-width: 100%;
+  --el-font-size-base: 11px;
+  --el-component-size: 32px;
+  font-size: 11px;
+}
+
+.consumption-filter-mobile :deep(.cf-date-single .el-input__wrapper) {
+  min-height: 32px;
+  height: 32px;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.consumption-filter-mobile :deep(.cf-date-single .el-input__inner) {
+  height: 30px;
+  line-height: 30px;
+  font-size: 11px !important;
+}
+
+.consumption-filter-mobile :deep(.cf-date-single .el-input__inner::placeholder) {
+  font-size: 11px;
+  color: #b0b8c6;
+}
+
+.consumption-filter-mobile :deep(.cf-date-single .el-input__prefix-inner),
+.consumption-filter-mobile :deep(.cf-date-single .el-input__suffix-inner) {
+  font-size: 12px;
+}
+
+.consumption-filter-mobile .cf-actions--mobile {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  margin-top: 2px;
+  padding-top: 2px;
+}
+
+.cf-btn--mobile {
+  flex: 1;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+}
+
+.consumption-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  align-items: center;
+}
+
+.consumption-filter-grid.is-admin {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.cf-control {
+  width: 100%;
+  min-width: 0;
+}
+
+.cf-date {
+  grid-column: 1 / span 2;
+  width: 100% !important;
+  max-width: 100%;
+}
+
+.consumption-filter-grid.is-admin .cf-date {
+  grid-column: 1 / span 3;
+}
+
+.consumption-filter-grid:not(.is-admin) .cf-actions {
+  grid-column: 3;
+  justify-self: end;
+}
+
+.consumption-filter-grid.is-admin .cf-actions {
+  grid-column: 4;
+  justify-self: end;
+}
+
+.consumption-filter-grid :deep(.cf-date.el-date-editor--daterange) {
+  width: 100% !important;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.consumption-filter-grid :deep(.el-input__wrapper),
+.consumption-filter-grid :deep(.el-select__wrapper) {
+  border-radius: 10px;
+  background: #f8faff;
+  box-shadow: 0 0 0 1px #e4ebf5 inset;
+  transition: box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.consumption-filter-grid :deep(.el-input__wrapper:hover),
+.consumption-filter-grid :deep(.el-select__wrapper:hover) {
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(47, 109, 246, 0.28) inset;
+}
+
+.consumption-filter-grid :deep(.el-input__wrapper.is-focus),
+.consumption-filter-grid :deep(.el-select__wrapper.is-focused) {
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--cp-primary) inset, 0 0 0 3px rgba(47, 109, 246, 0.1);
+}
+
+.cf-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.cf-btn {
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+}
+
+.cf-btn--primary {
+  border: none;
+  background: var(--cp-primary);
+  color: #fff;
+}
+
+.cf-btn--primary:hover {
+  background: #2558d4;
+}
+
+.cf-btn--ghost {
+  border: 1px solid #e4ebf5;
+  background: #fff;
+  color: var(--cp-text-2);
+}
+
+.cf-btn--ghost:hover {
+  border-color: #c7d7ff;
+  background: #f5f8ff;
+  color: var(--cp-primary);
 }
 
 .record-list {
-  padding: 14px 16px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 10px;
   min-height: 200px;
+  background: linear-gradient(180deg, #f8faff 0%, #f4f7fb 100%);
 }
 
 .record-list :deep(.el-loading-mask) {
@@ -755,33 +1361,56 @@ onUnmounted(() => {
 
 .record-card {
   display: flex;
-  gap: 16px;
-  padding: 16px 18px;
-  margin-bottom: 10px;
+  flex-direction: column;
   border-radius: 14px;
-  border: 1px solid #eef2f7;
+  border: 1px solid #e2e8f0;
   background: #fff;
-  transition: border-color 180ms ease, box-shadow 180ms ease, transform 180ms ease;
+  box-shadow: 0 2px 10px rgba(21, 32, 51, 0.05);
+  overflow: hidden;
+  transition: border-color 180ms ease, box-shadow 180ms ease;
 }
 
-.record-card:last-child {
-  margin-bottom: 0;
+.record-card.is-expanded {
+  border-color: #b8ccfa;
+  box-shadow: 0 8px 24px rgba(47, 109, 246, 0.1);
 }
 
-.record-card:hover {
-  border-color: #c7d7ff;
-  box-shadow: 0 8px 24px rgba(47, 109, 246, 0.08);
-  transform: translateY(-1px);
+.record-clickable {
+  padding: 10px 12px;
+  min-width: 0;
+}
+
+.record-card.is-clickable .record-clickable {
+  cursor: pointer;
+}
+
+.record-card.is-clickable .record-clickable:hover {
+  background: linear-gradient(180deg, #fbfcff 0%, #fff 100%);
+}
+
+.record-card.is-clickable .record-clickable:hover .record-chevron {
+  color: var(--cp-primary);
+}
+
+.record-card.is-clickable .record-clickable:focus-visible {
+  outline: 2px solid rgba(47, 109, 246, 0.35);
+  outline-offset: -2px;
+}
+
+.record-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
 }
 
 .record-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.6);
 }
 
 .record-card.is-income .record-icon {
@@ -794,64 +1423,95 @@ onUnmounted(() => {
   background: linear-gradient(145deg, #fff1f2, #ffe4e6);
 }
 
-.record-main {
+.record-body {
   min-width: 0;
   flex: 1;
+  padding-top: 1px;
 }
 
-.record-head {
+.record-title-row {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-
-.record-title-wrap {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
   gap: 8px;
   min-width: 0;
 }
 
 .record-title {
-  font-size: 16px;
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
   font-weight: 700;
   color: var(--cp-text);
-  line-height: 1.3;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.record-chevron {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: #c0c9d6;
+  transition: transform 320ms cubic-bezier(0.22, 1, 0.36, 1), color 200ms ease;
+}
+
+.record-chevron--open {
+  transform: rotate(90deg);
+  color: var(--cp-primary);
+}
+
+.record-meta-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.record-time {
+  font-size: 12px;
+  color: var(--cp-text-3);
 }
 
 .record-type-tag {
   display: inline-flex;
   padding: 2px 8px;
-  border-radius: 6px;
+  border-radius: 999px;
   font-size: 11px;
   font-weight: 600;
-  color: var(--cp-primary);
-  background: rgba(47, 109, 246, 0.08);
+  line-height: 1.3;
 }
 
-.record-amount-wrap {
-  flex-shrink: 0;
-  padding: 6px 12px;
-  border-radius: 10px;
-  background: #f8fafc;
-}
-
-.record-card.is-income .record-amount-wrap {
+.record-type-tag.is-in {
+  color: #16a34a;
   background: #ecfdf3;
+  border: 1px solid rgba(22, 163, 74, 0.15);
 }
 
-.record-card.is-expense .record-amount-wrap {
+.record-type-tag.is-out {
+  color: #dc2626;
   background: #fff1f2;
+  border: 1px solid rgba(220, 38, 38, 0.12);
 }
 
 .record-amount {
-  font-size: 17px;
+  flex-shrink: 0;
+  font-size: 14px;
   font-weight: 800;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.2px;
+}
+
+.record-detail-wrap {
+  overflow: hidden;
+}
+
+.record-detail {
+  padding: 10px 12px 12px;
+  border-top: 1px solid #f0f2f7;
+  background: linear-gradient(180deg, #f8faff 0%, #fff 100%);
 }
 
 .record-card.is-income .record-amount { color: #16a34a; }
@@ -861,8 +1521,8 @@ onUnmounted(() => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
-  margin-top: 10px;
+  gap: 8px;
+  padding-top: 10px;
 }
 
 .meta-chip {
@@ -879,19 +1539,24 @@ onUnmounted(() => {
   color: var(--cp-primary);
 }
 
-.meta-time {
-  font-size: 12px;
-  color: var(--cp-text-3);
+.meta-chip--agent {
+  background: rgba(239, 68, 68, 0.08);
+  color: #dc2626;
+}
+
+.meta-chip--sub {
+  background: rgba(16, 185, 129, 0.08);
+  color: #059669;
 }
 
 .record-ids {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin-top: 10px;
+  margin-top: 8px;
   padding: 10px 12px;
   border-radius: 10px;
-  background: #f8faff;
+  background: #fff;
   border: 1px solid #eef2f7;
 }
 
@@ -911,14 +1576,34 @@ onUnmounted(() => {
   font-family: inherit;
 }
 
+.id-line--claw {
+  font-size: 13px;
+  font-weight: 700;
+  color: #dc2626;
+}
+
+.id-line--claw em {
+  color: #dc2626;
+}
+
+.id-line--comm {
+  font-size: 13px;
+  font-weight: 700;
+  color: #059669;
+}
+
+.id-line--comm em {
+  color: #059669;
+}
+
 .record-remark {
-  margin: 10px 0 0;
+  margin: 8px 0 0;
   padding: 8px 12px;
   font-size: 12px;
   color: #64748b;
   line-height: 1.5;
   border-radius: 8px;
-  background: #fafbff;
+  background: #fff;
   border-left: 3px solid #c7d7ff;
 }
 
@@ -967,6 +1652,31 @@ onUnmounted(() => {
 
 .pagination-wrap :deep(.el-pagination.is-background .el-pager li.is-active) {
   background: var(--cp-primary);
+}
+
+@media (max-width: 1080px) {
+  .consumption-filter-grid,
+  .consumption-filter-grid.is-admin {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .consumption-filter-grid .cf-order,
+  .consumption-filter-grid .cf-date {
+    grid-column: 1 / -1;
+  }
+
+  .consumption-filter-grid .cf-actions {
+    grid-column: 1 / -1;
+    justify-self: stretch;
+  }
+
+  .cf-actions {
+    width: 100%;
+  }
+
+  .cf-btn {
+    flex: 1;
+  }
 }
 
 @media (max-width: 900px) {
@@ -1036,235 +1746,171 @@ onUnmounted(() => {
   }
 
   .stat-value {
-    font-size: 15px;
+    font-size: 14px;
   }
 
-  .panel-toolbar {
-    border-bottom: none;
+  .consumption-filter {
+    padding: 14px 12px 16px;
   }
 
-  .filter-form.filter-form--narrow {
-    --el-font-size-base: 12px;
-    --el-form-label-font-size: 10px;
-    --el-component-size-small: 26px;
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    column-gap: 8px;
-    row-gap: 0;
-    padding: 8px 10px 4px;
-    align-items: end;
+  .consumption-filter-head {
+    margin-bottom: 16px;
   }
 
-  .filter-form.filter-form--narrow .filter-item--full {
-    grid-column: 1 / -1;
+  .consumption-filter-mobile {
+    gap: 14px;
+    --el-font-size-base: 11px;
+    --el-component-size: 28px;
+    font-size: 11px;
   }
 
-  .filter-form.filter-form--narrow .filter-item--half {
-    min-width: 0;
-    width: auto;
+  .consumption-filter-mobile :deep(.cf-control) {
+    --el-font-size-base: 11px;
+    --el-component-size: 28px;
   }
 
-  .filter-form.filter-form--narrow.el-form--inline :deep(.el-form-item) {
-    display: flex;
-    flex-direction: column;
-    margin-right: 0;
-    vertical-align: unset;
+  .consumption-filter-mobile :deep(.cf-control .el-input__wrapper),
+  .consumption-filter-mobile :deep(.cf-control .el-select__wrapper) {
+    min-height: 28px;
+    height: 28px;
+    font-size: 11px;
+    line-height: 26px;
   }
 
-  .filter-form.filter-form--narrow :deep(.el-form-item) {
-    margin-bottom: 6px;
-    width: 100%;
-  }
-
-  .filter-form.filter-form--narrow :deep(.el-form-item__label) {
-    font-size: 10px !important;
-    font-weight: 500 !important;
-    line-height: 1.15;
-    padding-bottom: 2px !important;
-    height: auto !important;
-  }
-
-  .filter-form.filter-form--narrow :deep(.el-form-item__content) {
-    line-height: 1;
-  }
-
-  .filter-form.filter-form--narrow :deep(.el-input__wrapper),
-  .filter-form.filter-form--narrow :deep(.el-select__wrapper) {
-    min-height: 26px !important;
-    height: 26px;
-    padding: 0 8px;
-    font-size: 12px !important;
-  }
-
-  .filter-form.filter-form--narrow :deep(.el-select__placeholder),
-  .filter-form.filter-form--narrow :deep(.el-select__selected-item),
-  .filter-form.filter-form--narrow :deep(.el-input__inner) {
-    font-size: 12px !important;
-  }
-
-  /* 订单号输入框 */
-  .filter-form.filter-form--narrow :deep(.filter-order-input .el-input__wrapper) {
-    min-height: 26px !important;
-    height: 26px;
-    padding: 0 8px;
-    font-size: 12px !important;
-  }
-
-  .filter-form.filter-form--narrow :deep(.filter-order-input .el-input__wrapper input),
-  .filter-form.filter-form--narrow :deep(.filter-order-input .el-input__inner) {
-    font-size: 12px !important;
-    height: 24px;
-    line-height: 24px;
-  }
-
-  .filter-form.filter-form--narrow :deep(.filter-order-input .el-input__wrapper input::placeholder),
-  .filter-form.filter-form--narrow :deep(.filter-order-input .el-input__inner::placeholder) {
-    font-size: 12px !important;
-    color: #b0b8c6;
-  }
-
-  .filter-form.filter-form--narrow :deep(.filter-item--order .el-form-item__label),
-  .filter-form.filter-form--narrow :deep(.filter-item--date .el-form-item__label) {
-    font-size: 10px !important;
-  }
-
-  /* 时间范围 */
-  .filter-form.filter-form--narrow :deep(.filter-date.el-date-editor--daterange) {
-    width: 100% !important;
-    max-width: 100%;
-    height: 26px !important;
-    --el-date-editor-width: 100%;
-    font-size: 12px !important;
-  }
-
-  .filter-form.filter-form--narrow :deep(.filter-date.el-date-editor .el-input__wrapper) {
-    min-height: 26px !important;
-    height: 26px;
-    padding: 0 6px;
-    width: 100% !important;
-    box-sizing: border-box;
-    font-size: 12px !important;
-  }
-
-  .filter-form.filter-form--narrow :deep(.filter-date .el-input__inner) {
-    font-size: 12px !important;
-    height: 24px;
-    line-height: 24px;
-  }
-
-  .filter-form.filter-form--narrow :deep(.filter-date .el-input__inner::placeholder) {
+  .consumption-filter-mobile :deep(.cf-control input),
+  .consumption-filter-mobile :deep(.cf-control .el-input__inner),
+  .consumption-filter-mobile :deep(.cf-control .el-select__selected-item),
+  .consumption-filter-mobile :deep(.cf-control .el-select__placeholder),
+  .consumption-filter-mobile :deep(.cf-control .el-select__input) {
     font-size: 11px !important;
-    color: #b0b8c6;
   }
 
-  .filter-form.filter-form--narrow :deep(.el-date-editor.el-input__wrapper) {
-    min-height: 26px !important;
-    height: 26px;
-    padding: 0 6px;
-    width: 100% !important;
-    box-sizing: border-box;
-  }
-
-  .filter-form.filter-form--narrow :deep(.el-range-input) {
+  .consumption-filter-mobile :deep(.cf-control input::placeholder),
+  .consumption-filter-mobile :deep(.cf-control .el-input__inner::placeholder) {
     font-size: 11px !important;
-    height: 22px;
-    line-height: 22px;
-    width: 38% !important;
   }
 
-  .filter-form.filter-form--narrow :deep(.el-range-input::placeholder) {
-    font-size: 11px !important;
-    color: #b0b8c6;
+  .consumption-filter-mobile .cf-actions--mobile {
+    margin-top: 4px;
+    padding-top: 0;
+    gap: 10px;
   }
 
-  .filter-form.filter-form--narrow :deep(.el-range-separator) {
-    font-size: 10px !important;
-    line-height: 24px;
-    padding: 0 2px;
-    flex: none;
-  }
-
-  .filter-form.filter-form--narrow :deep(.el-range__icon),
-  .filter-form.filter-form--narrow :deep(.el-range__close-icon) {
-    font-size: 12px;
-    line-height: 24px;
-  }
-
-  .filter-form.filter-form--narrow :deep(.el-button) {
-    font-size: 12px !important;
-    height: 28px !important;
-    padding: 0 10px !important;
-    font-weight: 500;
-  }
-
-  .filter-form.filter-form--narrow .filter-control,
-  .filter-form.filter-form--narrow .filter-item--user .filter-control,
-  .filter-form.filter-form--narrow .filter-item--date .filter-control,
-  .filter-form.filter-form--narrow .filter-date {
-    width: 100% !important;
-  }
-
-  .filter-form.filter-form--narrow .filter-item--actions :deep(.el-form-item__label) {
-    display: none;
-  }
-
-  .filter-form.filter-form--narrow .filter-actions {
-    width: 100%;
+  .cf-date-row {
     gap: 6px;
   }
 
-  .filter-form.filter-form--narrow .filter-actions .el-button {
-    flex: 1;
-  }
-
-  .list-header {
-    padding: 10px 12px 8px;
-  }
-
-  .list-title {
-    font-size: 13px;
-  }
-
-  .list-count {
+  .cf-date-sep {
     font-size: 11px;
-    padding: 2px 8px;
+  }
+
+  .consumption-filter-mobile :deep(.cf-date-single.el-date-editor) {
+    height: 30px !important;
+    --el-component-size: 30px;
+    --el-font-size-base: 11px;
+    font-size: 11px;
+  }
+
+  .consumption-filter-mobile :deep(.cf-date-single .el-input__wrapper) {
+    min-height: 30px;
+    height: 30px;
+    padding: 0 5px;
+    font-size: 11px;
+  }
+
+  .consumption-filter-mobile :deep(.cf-date-single .el-input__inner) {
+    height: 28px;
+    line-height: 28px;
+    font-size: 11px !important;
+  }
+
+  .consumption-filter-mobile :deep(.cf-date-single .el-input__inner::placeholder) {
+    font-size: 11px;
+  }
+
+  .consumption-filter-mobile :deep(.cf-date-single .el-input__prefix-inner) {
+    font-size: 12px;
+  }
+
+  .cf-btn--mobile {
+    height: 28px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .consumption-filter-title {
+    font-size: 12px;
+  }
+
+  .consumption-filter-count {
+    font-size: 11px;
+  }
+
+  .consumption-filter-count strong {
+    font-size: 12px;
+  }
+
+  .consumption-filter-grid,
+  .consumption-filter-grid.is-admin {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .consumption-filter-grid .cf-control,
+  .consumption-filter-grid .cf-user,
+  .consumption-filter-grid .cf-order,
+  .consumption-filter-grid .cf-date,
+  .consumption-filter-grid .cf-direction,
+  .consumption-filter-grid .cf-actions {
+    grid-column: 1 / -1;
+  }
+
+  .consumption-filter-grid :deep(.el-select__wrapper),
+  .consumption-filter-grid :deep(.el-input__wrapper) {
+    min-height: 36px;
+  }
+
+  .cf-actions {
+    width: 100%;
+  }
+
+  .cf-btn {
+    flex: 1;
+    height: 32px;
+    padding: 0 10px;
+    font-size: 12px;
+    line-height: 1;
+  }
+
+  .consumption-filter-grid :deep(.cf-date.el-date-editor--daterange) {
+    width: 100% !important;
+    --el-date-editor-width: 100%;
   }
 
   .record-list {
-    padding: 8px 10px 6px;
+    padding: 10px 10px 8px;
+    gap: 8px;
     min-height: 160px;
   }
 
-  .record-card {
-    padding: 10px 12px;
-    gap: 10px;
-    margin-bottom: 8px;
-    border-radius: 10px;
-  }
-
-  .record-card:hover {
-    transform: none;
+  .record-clickable {
+    padding: 9px 10px;
   }
 
   .record-icon {
-    width: 36px;
-    height: 36px;
-    border-radius: 10px;
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
   }
 
   .record-icon svg {
-    width: 18px;
-    height: 18px;
-  }
-
-  .record-head {
-    flex-direction: row;
-    align-items: center;
-    gap: 8px;
+    width: 14px;
+    height: 14px;
   }
 
   .record-title {
-    font-size: 14px;
+    font-size: 12px;
+    font-weight: 600;
   }
 
   .record-type-tag {
@@ -1272,27 +1918,27 @@ onUnmounted(() => {
     padding: 1px 6px;
   }
 
-  .record-amount-wrap {
-    align-self: center;
-    padding: 4px 8px;
+  .record-amount {
+    font-size: 12px;
+    font-weight: 700;
   }
 
-  .record-amount {
-    font-size: 14px;
+  .record-time {
+    font-size: 10px;
+  }
+
+  .record-detail {
+    padding: 8px 10px 10px;
   }
 
   .record-meta {
-    margin-top: 6px;
+    padding-top: 8px;
     gap: 6px;
   }
 
   .meta-chip {
     font-size: 11px;
     padding: 2px 8px;
-  }
-
-  .meta-time {
-    font-size: 11px;
   }
 
   .record-ids {
@@ -1348,6 +1994,251 @@ onUnmounted(() => {
     min-width: 26px;
     height: 26px;
     line-height: 26px;
+    font-size: 12px;
+  }
+}
+
+/* ========== 订单号预览触发器 ========== */
+.id-line--order {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+.op-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cp-primary);
+  text-align: left;
+  word-break: break-all;
+}
+
+.op-trigger:hover .op-trigger-no { text-decoration: underline; }
+.op-trigger-icon { flex-shrink: 0; opacity: 0.85; }
+
+/* ========== 订单快捷预览弹窗 ========== */
+.op-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(3px);
+}
+
+.op-modal {
+  width: 100%;
+  max-width: 420px;
+  max-height: 88vh;
+  overflow-y: auto;
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.25);
+}
+
+.op-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  border-bottom: 1px solid #f0f2f7;
+}
+
+.op-title { margin: 0; font-size: 16px; font-weight: 800; color: var(--cp-text); }
+
+.op-close {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 9px;
+  background: #f6f8fc;
+  color: var(--cp-text-3);
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+
+.op-close:hover { background: #fff1f0; color: #e85d5d; }
+
+.op-body { padding: 16px 18px 18px; }
+
+.op-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 36px 0;
+  color: var(--cp-text-3);
+  font-size: 14px;
+}
+
+.op-state--err { color: #e85d5d; }
+
+.op-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #e8edf4;
+  border-top-color: var(--cp-primary);
+  border-radius: 50%;
+  animation: op-spin 0.7s linear infinite;
+}
+
+@keyframes op-spin { to { transform: rotate(360deg); } }
+
+.op-note { display: flex; align-items: flex-start; gap: 12px; }
+
+.op-avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 12px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: #f3f0ff;
+}
+
+.op-avatar--ph {
+  display: grid;
+  place-items: center;
+  font-size: 20px;
+  font-weight: 800;
+  color: #7c6ee6;
+  background: linear-gradient(135deg, #f3f0ff, #e8f0ff);
+}
+
+.op-note-info { flex: 1; min-width: 0; }
+
+.op-note-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--cp-text);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.op-note-author {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--cp-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.op-status {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.op-order-no {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: var(--cp-text-3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all;
+}
+
+.op-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.op-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: center;
+  padding: 10px 6px;
+  border-radius: 11px;
+  background: #f8faff;
+  border: 1px solid #eef2f7;
+  text-align: center;
+}
+
+.op-metric span { font-size: 11px; color: var(--cp-text-3); }
+.op-metric strong { font-size: 14px; font-weight: 800; color: var(--cp-text); font-variant-numeric: tabular-nums; }
+
+.op-progress {
+  height: 6px;
+  margin-top: 12px;
+  background: #eef2f7;
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.op-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--cp-primary);
+  transition: width 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.op-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  background: #f5f8ff;
+  border: 1px solid #e4ecff;
+  font-size: 12px;
+  color: var(--cp-primary);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.op-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.op-link svg { flex-shrink: 0; }
+.op-link:hover { background: #eef3ff; }
+
+.op-fade-enter-active, .op-fade-leave-active { transition: opacity 0.2s ease; }
+.op-fade-enter-from, .op-fade-leave-to { opacity: 0; }
+</style>
+
+<style>
+@media (max-width: 760px) {
+  .cp-mobile-date-popper.el-picker__popper {
+    max-width: min(300px, calc(100vw - 24px)) !important;
+    --el-font-size-base: 12px;
+  }
+
+  .cp-mobile-date-popper .el-picker-panel {
+    width: 100% !important;
+    font-size: 12px;
+  }
+
+  .cp-mobile-date-popper .el-date-picker {
+    width: 100% !important;
+  }
+
+  .cp-mobile-date-popper .el-date-picker__header-label,
+  .cp-mobile-date-popper .el-date-table th,
+  .cp-mobile-date-popper .el-date-table td .el-date-table-cell__text {
     font-size: 12px;
   }
 }

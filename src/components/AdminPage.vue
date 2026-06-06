@@ -1,6 +1,8 @@
 <script setup>
 import { inject, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import EmptyState from './EmptyState.vue'
+import UserAvatar from './UserAvatar.vue'
 
 const router = useRouter()
 
@@ -274,7 +276,7 @@ async function toggleUserStatus(user) {
         </div>
         <span v-if="!batchConfigLoading" class="section-meta">{{ batchTypes.filter(t => t.enabled).length }}/{{ batchTypes.length }} 已开启</span>
       </header>
-      <div v-if="batchConfigLoading" class="empty-state"><div class="empty-spinner"></div><span>加载中...</span></div>
+      <EmptyState v-if="batchConfigLoading" loading class="empty-state" />
       <div v-else class="batch-toggle-grid">
         <div v-for="t in batchTypes" :key="t.key" class="batch-toggle-item" :class="{ off: !t.enabled }">
           <div class="toggle-info">
@@ -302,12 +304,12 @@ async function toggleUserStatus(user) {
         </div>
         <span v-if="!bonusLoading" class="section-meta">{{ bonusAllAgents.length }} 个代理</span>
       </header>
-      <div v-if="bonusLoading" class="empty-state"><div class="empty-spinner"></div><span>加载中...</span></div>
-      <div v-else-if="bonusAllAgents.length === 0" class="empty-state">暂无代理账号</div>
+      <EmptyState v-if="bonusLoading" loading class="empty-state" />
+      <EmptyState v-else-if="bonusAllAgents.length === 0" class="empty-state" text="暂无代理账号" />
       <div v-else class="bonus-grid">
         <button v-for="agent in bonusAllAgents" :key="agent.id" type="button" class="bonus-card" @click="openBonusEdit(agent)">
           <div class="bonus-card-top">
-            <span class="bonus-avatar">{{ (agent.nickname || agent.username || '?')[0] }}</span>
+            <UserAvatar :name="agent.nickname || agent.username" :size="44" shape="rounded" />
             <div class="bonus-card-meta">
               <strong class="bonus-agent-name">{{ agent.nickname || agent.username }}</strong>
               <span class="bonus-sub-count">{{ agent.sub_count }} 个下级</span>
@@ -396,8 +398,8 @@ async function toggleUserStatus(user) {
             </tr>
           </tbody>
         </table>
-        <div v-if="loading" class="empty-state table-empty"><div class="empty-spinner"></div><span>加载中...</span></div>
-        <div v-if="!loading && users.length === 0" class="empty-state table-empty">暂无用户数据</div>
+        <EmptyState v-if="loading" loading class="empty-state table-empty" />
+        <EmptyState v-if="!loading && users.length === 0" class="empty-state table-empty" text="暂无用户数据" />
       </div>
 
       <div v-if="total > 20" class="pager-wrap">
@@ -418,7 +420,7 @@ async function toggleUserStatus(user) {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
         <header class="dialog-header">
-          <span class="dialog-avatar">{{ (bonusEditAgent.nickname || bonusEditAgent.username || '?')[0] }}</span>
+          <UserAvatar :name="bonusEditAgent.nickname || bonusEditAgent.username" :size="48" shape="rounded" />
           <div class="dialog-header-text">
             <h2 id="bonus-dialog-title">注册奖励</h2>
             <p class="dialog-subtitle">{{ bonusEditAgent.nickname || bonusEditAgent.username }}</p>

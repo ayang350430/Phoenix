@@ -1,4 +1,4 @@
-import crypto from 'crypto'
+import { uniqueCode } from '../utils/idGen.js'
 
 /**
  * 代理分润
@@ -15,10 +15,6 @@ import crypto from 'crypto'
  */
 
 const round4 = n => Math.round((Number(n) || 0) * 10000) / 10000
-
-function recNo(prefix) {
-  return `${prefix}-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`
-}
 
 async function getBalance(trx, userId) {
   const row = await trx('balance_accounts').where({ user_id: userId }).forUpdate().first()
@@ -59,7 +55,7 @@ export async function creditAgentCommission(trx, { agentId, basePrice, unitPrice
     const before = running
     running = round4(running + commission)
     await trx('account_records').insert({
-      record_no: recNo('AGENTCOMM'),
+      record_no: await uniqueCode(trx, 'account_records', 'record_no'),
       user_id: agentId,
       record_type: 'agent_commission',
       direction: 'in',
@@ -95,8 +91,10 @@ export async function creditAgentCommission(trx, { agentId, basePrice, unitPrice
 export async function clawbackAgentCommission(trx, order, refundQty) {
   if (!order || !refundQty || refundQty <= 0) return 0
 
+  // 按 order_no 匹配（排除 order_id 复用导致的孤儿分润行，避免扣错代理余额）
   const comm = await trx('account_records')
-    .where({ order_id: order.id, record_type: 'agent_commission' }).first()
+    .where({ order_no: order.order_no, record_type: 'agent_commission' })
+    .orderBy('id', 'desc').first()
   if (!comm) return 0
 
   const agentId = comm.user_id
@@ -104,9 +102,9 @@ export async function clawbackAgentCommission(trx, order, refundQty) {
   const commAmount = parseFloat(comm.net_amount) || 0
   if (!agentId || commQty <= 0 || commAmount <= 0) return 0
 
-  // 该订单已扣回的累计金额，避免重复扣
+  // 该订单已扣回的累计金额，避免重复扣（同样按 order_no 匹配）
   const clawedAgg = await trx('account_records')
-    .where({ order_id: order.id, record_type: 'agent_commission_refund' })
+    .where({ order_no: order.order_no, record_type: 'agent_commission_refund' })
     .sum({ s: 'refund_amount' }).first()
   const alreadyClawed = parseFloat(clawedAgg?.s) || 0
 
@@ -120,7 +118,7 @@ export async function clawbackAgentCommission(trx, order, refundQty) {
   const after = round4(before - clawback)
 
   await trx('account_records').insert({
-    record_no: recNo('AGENTREF'),
+    record_no: await uniqueCode(trx, 'account_records', 'record_no'),
     user_id: agentId,
     record_type: 'agent_commission_refund',
     direction: 'out',
