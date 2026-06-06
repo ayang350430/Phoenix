@@ -4,6 +4,8 @@ import { cancelTask } from '../services/xhsApi.js'
 import { clawbackAgentCommission } from '../services/agentCommission.js'
 import { refreshBatchStatus } from '../services/batchStatus.js'
 import { calcRefundAmount } from '../utils/refundAmount.js'
+import { getOrderChargeRecord, hasSuccessfulRefund } from '../utils/orderCharge.js'
+import { uniqueCode } from '../utils/idGen.js'
 import db from '../db.js'
 
 const router = Router()
@@ -112,8 +114,15 @@ router.get('/', authRequired, roleRequired('admin'), async (req, res) => {
 // 退款单条订单的核心逻辑（事务内调用）
 // fullRefund=true 时全额退款，不扣除已完成部分
 async function refundSingleOrder(trx, order, userId, ts, idx, fullRefund = false) {
-  const chargeRec = await trx('account_records')
-    .where({ order_id: order.id, record_type: 'order_charge' }).first()
+  // 幂等 + 防并发：锁定订单行后重新判定，已退款（含部分完成后已退）或已存在退款流水则跳过，
+  // 杜绝「直接退 + 审批退」等多入口对同一订单重复打款
+  const locked = await trx('orders').where({ id: order.id }).forUpdate().first()
+  if (!locked || ['refunded', 'cancelled'].includes(locked.order_status)) return 0
+  if (await hasSuccessfulRefund(trx, locked)) return 0
+  order = locked
+
+  // 按 order_no 取权威扣费行（排除 order_id 复用导致的孤儿行，避免超额/少退）
+  const chargeRec = await getOrderChargeRecord(trx, order)
   if (!chargeRec) return 0
 
   const unitPrice = parseFloat(chargeRec.original_unit_price) || 0
@@ -141,7 +150,7 @@ async function refundSingleOrder(trx, order, userId, ts, idx, fullRefund = false
   const afterBal = Math.round((beforeBal + refundAmount) * 10000) / 10000
 
   await trx('account_records').insert({
-    record_no: `REFUND-${ts}-${String(idx).padStart(4, '0')}`,
+    record_no: await uniqueCode(trx, 'account_records', 'record_no'),
     user_id: userId,
     record_type: 'refund',
     direction: 'credit',
